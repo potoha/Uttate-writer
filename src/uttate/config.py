@@ -12,9 +12,11 @@ class ProviderSettings:
     """Connection settings for an OpenAI-compatible provider."""
 
     type: str = "lmstudio"
-    base_url: str = "http://localhost:1234/v1"
+    base_url: str = "http://127.0.0.1:1234/v1"
     api_key: str = "lm-studio"
     model: str = ""
+    timeout_seconds: float = 60.0
+    reasoning_effort: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,10 @@ def load_settings(path: Path | None = None) -> AppSettings:
         base_url=_string_value(raw_provider, "base_url", defaults.base_url),
         api_key=_string_value(raw_provider, "api_key", defaults.api_key),
         model=_string_value(raw_provider, "model", defaults.model),
+        timeout_seconds=_positive_number_value(
+            raw_provider, "timeout_seconds", defaults.timeout_seconds
+        ),
+        reasoning_effort=_string_value(raw_provider, "reasoning_effort", defaults.reasoning_effort),
     )
     return AppSettings(provider=provider)
 
@@ -75,3 +81,10 @@ def _string_value(values: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"The {key} setting must be a string.")
     return value
+
+
+def _positive_number_value(values: dict[str, Any], key: str, default: float) -> float:
+    value = values.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        raise ValueError(f"The {key} setting must be a positive number.")
+    return float(value)

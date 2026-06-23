@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 
-from uttate.providers.base import ConversionResult
+from uttate.models import JsonObject
+from uttate.providers.base import ConversionResult, LLMProvider
 
 _KNOWN_CONVERSIONS: dict[str, tuple[str, str, str]] = {
     "keyboardhabunbougudakara inputnostresswosaishoukashinakerebanaranai": (
@@ -18,7 +19,7 @@ _KNOWN_CONVERSIONS: dict[str, tuple[str, str, str]] = {
 }
 
 
-class MockProvider:
+class MockProvider(LLMProvider):
     """Deterministic local provider used to build and test the M2 UX loop."""
 
     def __init__(self, *, delay_seconds: float = 0.03) -> None:
@@ -52,3 +53,22 @@ class MockProvider:
                 },
             ),
         )
+
+    def complete_json(
+        self,
+        messages: list[JsonObject],
+        schema: JsonObject | None = None,
+    ) -> JsonObject:
+        del schema
+        if not messages:
+            raise ValueError("messages must not be empty.")
+        content = messages[-1].get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("The last message must contain raw input text.")
+
+        result = self.convert(content)
+        return {
+            "normalized": result.normalized,
+            "segments": list(result.segments),
+            "uncertain": list(result.uncertain),
+        }

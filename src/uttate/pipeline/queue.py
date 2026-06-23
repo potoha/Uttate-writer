@@ -95,7 +95,13 @@ class ConversionQueue(QObject):
     def _apply_result(chunk: Chunk, result: ConversionResult) -> None:
         chunk.normalized = result.normalized
         chunk.segments = list(result.segments)
+        chunk.uncertain = list(result.uncertain)
         chunk.transition_to(ChunkStatus.NORMALIZED)
+
+        if result.candidate_1 is None and result.candidate_2 is None:
+            return
+        if result.candidate_1 is None or result.candidate_2 is None:
+            raise ValueError("Both review candidates must be present when conversion continues.")
 
         chunk.transition_to(ChunkStatus.RETRIEVING_DICTIONARY)
         chunk.dictionary_candidates = list(result.dictionary_candidates)
@@ -103,7 +109,6 @@ class ConversionQueue(QObject):
         chunk.transition_to(ChunkStatus.CONVERTING)
         chunk.candidate_1 = result.candidate_1
         chunk.candidate_2 = result.candidate_2
-        chunk.uncertain = list(result.uncertain)
         chunk.transition_to(ChunkStatus.READY_FOR_REVIEW)
 
     @staticmethod

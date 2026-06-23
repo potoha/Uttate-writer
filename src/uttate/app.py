@@ -5,10 +5,14 @@ from collections.abc import Sequence
 
 from PySide6.QtWidgets import QApplication
 
+from uttate.providers.base import ConversionProvider
 from uttate.ui.main_window import MainWindow
 
 
-def create_application(argv: Sequence[str] | None = None) -> tuple[QApplication, MainWindow]:
+def create_application(
+    argv: Sequence[str] | None = None,
+    provider: ConversionProvider | None = None,
+) -> tuple[QApplication, MainWindow]:
     """Create the Qt application and its main window."""
 
     application = QApplication.instance()
@@ -19,5 +23,5 @@ def create_application(argv: Sequence[str] | None = None) -> tuple[QApplication,
 
     application.setApplicationName("Uttate Writer")
     application.setOrganizationName("Uttate")
-    window = MainWindow()
+    window = MainWindow(provider)
     return application, window

@@ -566,6 +566,32 @@ English/katakana example:
 }
 ```
 
+## Lexicon Strategy: Sudachi First
+
+For the MVP, use SudachiPy + SudachiDict-core as the primary open dictionary layer.
+
+Do not use OS-bundled IME dictionaries directly.
+
+Sudachi is not the final conversion engine. It is used to provide lexical hints for the LLM-based conversion pipeline.
+
+Pipeline:
+
+raw mixed input
+→ LLM 1: reading normalization
+→ hiragana / English mixed text
+→ Sudachi lexicon retrieval
+→ user/project lexicon retrieval
+→ LLM 2: kanji-kana conversion
+→ review UI
+
+Initial dependency:
+
+```bash
+pip install sudachipy sudachidict_core
+```
+
+
+
 ### 8.3 Candidate Retrieval Rules
 
 Given normalized text and segments:

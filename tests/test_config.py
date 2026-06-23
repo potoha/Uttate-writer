@@ -9,8 +9,9 @@ def test_missing_settings_uses_local_lm_studio_defaults(tmp_path) -> None:
     settings = load_settings(tmp_path / "missing.json")
 
     assert settings == AppSettings()
-    assert settings.provider.base_url == "http://localhost:1234/v1"
+    assert settings.provider.base_url == "http://127.0.0.1:1234/v1"
     assert settings.provider.model == ""
+    assert settings.provider.reasoning_effort == "none"
 
 
 def test_partial_provider_settings_preserve_other_defaults(tmp_path) -> None:
@@ -49,4 +50,15 @@ def test_non_object_settings_are_rejected(tmp_path) -> None:
     settings_path.write_text("[]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="root must be a JSON object"):
+        load_settings(settings_path)
+
+
+def test_non_positive_provider_timeout_is_rejected(tmp_path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"provider": {"timeout_seconds": 0}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="positive number"):
         load_settings(settings_path)

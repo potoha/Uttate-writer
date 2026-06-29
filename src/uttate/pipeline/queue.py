@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from uttate.models import Chunk, ChunkStatus
-from uttate.providers.base import ConversionProvider, ConversionResult
+from uttate.providers.base import ConversionProvider, ProviderResult
 
 
 class _WorkerSignals(QObject):
@@ -30,7 +30,11 @@ class _ConversionWorker(QRunnable):
 
 
 class ConversionQueue(QObject):
-    """Run synchronous providers in a thread pool and update chunks on the UI thread."""
+    """Run synchronous providers in a thread pool and update chunks on the UI thread.
+
+    Project B treats conversion as a single provider call. Local multi-stage pipelines can
+    return later as another provider, but the queue should not know about their internals.
+    """
 
     chunk_updated = Signal(str)
     processing_count_changed = Signal(int)
@@ -56,7 +60,7 @@ class ConversionQueue(QObject):
         if chunk.id in self._workers:
             raise ValueError(f"Chunk {chunk.id} is already being converted.")
 
-        chunk.transition_to(ChunkStatus.NORMALIZING)
+        chunk.transition_to(ChunkStatus.QUEUED)
         self._chunks[chunk.id] = chunk
         worker = _ConversionWorker(chunk.id, chunk.raw_text, self._provider)
         worker.signals.completed.connect(self._handle_completed)
@@ -66,6 +70,8 @@ class ConversionQueue(QObject):
         self._active_count += 1
         self.chunk_updated.emit(chunk.id)
         self.processing_count_changed.emit(self._active_count)
+        chunk.transition_to(ChunkStatus.CONVERTING)
+        self.chunk_updated.emit(chunk.id)
         self._thread_pool.start(worker)
 
     def wait_for_done(self, timeout_ms: int = -1) -> bool:
@@ -75,7 +81,7 @@ class ConversionQueue(QObject):
     def _handle_completed(self, chunk_id: str, raw_result: object) -> None:
         chunk = self._chunks[chunk_id]
         try:
-            if not isinstance(raw_result, ConversionResult):
+            if not isinstance(raw_result, ProviderResult):
                 raise TypeError("The conversion provider returned an invalid result.")
             self._apply_result(chunk, raw_result)
         except Exception as error:  # noqa: BLE001 - convert pipeline errors to chunk failures
@@ -92,23 +98,14 @@ class ConversionQueue(QObject):
         self._finish_worker(chunk_id)
 
     @staticmethod
-    def _apply_result(chunk: Chunk, result: ConversionResult) -> None:
-        chunk.normalized = result.normalized
-        chunk.segments = list(result.segments)
+    def _apply_result(chunk: Chunk, result: ProviderResult) -> None:
+        # The UI still displays two slots because candidate comparison is the MVP gesture.
+        # Providers may return one candidate, but candidate_2 stays empty rather than faked.
+        chunk.candidate_1 = result.candidates[0].text
+        chunk.candidate_2 = result.candidates[1].text if len(result.candidates) > 1 else None
         chunk.uncertain = list(result.uncertain)
-        chunk.transition_to(ChunkStatus.NORMALIZED)
-
-        if result.candidate_1 is None and result.candidate_2 is None:
-            return
-        if result.candidate_1 is None or result.candidate_2 is None:
-            raise ValueError("Both review candidates must be present when conversion continues.")
-
-        chunk.transition_to(ChunkStatus.RETRIEVING_DICTIONARY)
-        chunk.dictionary_candidates = list(result.dictionary_candidates)
-
-        chunk.transition_to(ChunkStatus.CONVERTING)
-        chunk.candidate_1 = result.candidate_1
-        chunk.candidate_2 = result.candidate_2
+        chunk.provider = result.provider or None
+        chunk.model = result.model or None
         chunk.transition_to(ChunkStatus.READY_FOR_REVIEW)
 
     @staticmethod

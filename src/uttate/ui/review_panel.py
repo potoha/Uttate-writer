@@ -16,7 +16,6 @@ class ReviewPanel(QWidget):
         self.status_label = QLabel("チャンクを選択してください。")
         self.status_label.setObjectName("reviewStatus")
         self.raw_field = self._field("Raw")
-        self.normalized_field = self._field("Normalized")
         self.candidate_1_field = self._field("Candidate A")
         self.candidate_2_field = self._field("Candidate B")
         self.uncertain_field = self._field("Uncertain")
@@ -27,7 +26,6 @@ class ReviewPanel(QWidget):
         layout.addWidget(self.status_label)
         for label, field in (
             ("Raw", self.raw_field),
-            ("Normalized", self.normalized_field),
             ("Candidate A", self.candidate_1_field),
             ("Candidate B", self.candidate_2_field),
             ("Uncertain", self.uncertain_field),
@@ -40,9 +38,10 @@ class ReviewPanel(QWidget):
     def show_chunk(self, chunk: Chunk | None) -> None:
         if chunk is None:
             self.status_label.setText("チャンクを選択してください。")
-            values = ("", "", "", "", "")
+            values = ("", "", "", "")
         else:
-            self.status_label.setText(f"Status: {chunk.status.value}")
+            provider = f" / {chunk.provider}:{chunk.model}" if chunk.provider else ""
+            self.status_label.setText(f"Status: {chunk.status.value}{provider}")
             uncertainty = (
                 json.dumps(chunk.uncertain, ensure_ascii=False, indent=2)
                 if chunk.uncertain
@@ -50,7 +49,6 @@ class ReviewPanel(QWidget):
             )
             values = (
                 chunk.raw_text,
-                chunk.normalized or "",
                 chunk.candidate_1 or "",
                 chunk.candidate_2 or "",
                 uncertainty,
@@ -59,7 +57,6 @@ class ReviewPanel(QWidget):
         for field, value in zip(
             (
                 self.raw_field,
-                self.normalized_field,
                 self.candidate_1_field,
                 self.candidate_2_field,
                 self.uncertain_field,

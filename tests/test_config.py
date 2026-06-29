@@ -5,44 +5,51 @@ import pytest
 from uttate.config import AppSettings, ProviderSettings, load_settings, save_settings
 
 
-def test_missing_settings_uses_local_lm_studio_defaults(tmp_path) -> None:
-    settings = load_settings(tmp_path / "missing.json")
+def test_missing_settings_uses_mock_defaults(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
+    settings = load_settings(tmp_path / "missing.json", env_path=tmp_path / ".env")
 
     assert settings == AppSettings()
-    assert settings.provider.base_url == "http://127.0.0.1:1234/v1"
+    assert settings.provider.type == "mock"
     assert settings.provider.model == ""
-    assert settings.provider.reasoning_effort == "none"
+    assert settings.provider.gemini_model == "gemini-2.5-flash-lite"
 
 
-def test_partial_provider_settings_preserve_other_defaults(tmp_path) -> None:
+def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
     settings_path = tmp_path / "settings.json"
-    settings_path.write_text(
-        json.dumps({"provider": {"model": "local-model"}}),
+    settings_path.write_text(json.dumps({"provider": {"type": "mock"}}), encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "UTTATE_PROVIDER=gemini\nGEMINI_API_KEY=dummy-1234567890\n",
         encoding="utf-8",
     )
 
-    settings = load_settings(settings_path)
+    settings = load_settings(settings_path, env_path=env_path)
 
-    assert settings.provider.model == "local-model"
-    assert settings.provider.type == "lmstudio"
-    assert settings.provider.api_key == "lm-studio"
+    assert settings.provider.type == "gemini"
+    assert settings.provider.model == "gemini-2.5-flash-lite"
+    assert settings.provider.gemini_api_key == "dummy-1234567890"
 
 
 def test_settings_round_trip(tmp_path) -> None:
     settings_path = tmp_path / "nested" / "settings.json"
     expected = AppSettings(
         provider=ProviderSettings(
-            type="openai_compatible",
-            base_url="http://example.test/v1",
-            api_key="test-key",
-            model="test-model",
+            type="openai",
+            model="gpt-test",
+            gemini_api_key="secret-gemini",
+            openai_api_key="secret-openai",
         )
     )
 
     written_path = save_settings(expected, settings_path)
 
     assert written_path == settings_path
-    assert load_settings(settings_path) == expected
+    raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "gemini_api_key" not in raw["provider"]
+    assert "openai_api_key" not in raw["provider"]
+    assert load_settings(settings_path, env_path=tmp_path / ".env").provider.type == "openai"
 
 
 def test_non_object_settings_are_rejected(tmp_path) -> None:
@@ -61,4 +68,4 @@ def test_non_positive_provider_timeout_is_rejected(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="positive number"):
-        load_settings(settings_path)
+        load_settings(settings_path, env_path=tmp_path / ".env")

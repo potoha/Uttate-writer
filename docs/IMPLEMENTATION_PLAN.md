@@ -1,344 +1,490 @@
-# Uttate MVP 実装計画書
+# Uttate Writer Project B 実装計画書
 
 ## 1. 計画の方針
 
-本計画は `project.md` と `docs/PROJECT_SCOPE.md` を基準とし、最短で次の縦切りフローを成立させる。
+本計画は `project.md`、`project-b-api.md`、`docs/PROJECT_SCOPE.md` を基準に、
+Project B / API Provider Branch のMVPを完成させるための実装順を定義する。
+
+目標は、次の縦切りフローをGemini APIで成立させることだ。
 
 ```text
 ラフ入力
-→ Enterでチャンク確定
-→ 入力を継続
-→ バックグラウンド変換
-→ 候補A/B/原文をレビュー
-→ 採用または編集
-→ 最終文章を書き出し
+-> Enterでチャンク確定
+-> 入力を継続
+-> API Providerがバックグラウンド変換
+-> 候補A/B/原文をレビュー
+-> 採用または編集
+-> 最終文章を書き出し
 ```
 
-実装は機能を横断して積み上げる。早い段階からMockプロバイダーでUI全体を動かし、LM Studio連携や辞書品質が未完成でもUXを検証できる状態を保つ。
+旧計画ではM4途中としてSQLite辞書検索とローカルStage分割パイプラインを進めていた。
+Project Bでは、その路線をMVP本線から外し、変換体験を成立させる最短経路へ計画を
+組み替える。
 
-## 2. 前提と実装上の決定
+## 2. 現在地
 
-- Python 3.11以降、PySide6、pytestを採用する。
-- パッケージ名はPython慣例に合わせて `uttate` とする。
-- 依存関係と実行入口は `pyproject.toml` で管理する。
-- UIスレッドからLLM通信を分離する。
-- MVPの変換キューは並列数を制限し、結果のチャンク対応をIDで保証する。
-- 設定はJSON、辞書と文書の最小永続化はSQLiteを用いる。
-- APIの構造化出力機能へ依存せず、JSON文字列の検証とエラー処理をアプリ側に持つ。
-- `project.md` に重複・揺れがあるショートカットは、入力モード `Ctrl+K` でレビューへ、レビューから入力へは `Ctrl+J` を正とする。
-- Shorten、Smooth connection、任意キー設定はUI上の将来拡張点に留め、MVP必須条件には含めない。
+現行リポジトリには次の土台がある。
 
-## 3. マイルストーン
+- Python 3.12、PySide6、pytest、pytest-qtの開発基盤
+- `src/uttate/` パッケージ構成
+- `Chunk` / `Document` / `ChunkStatus`
+- Enter入力、チャンク一覧、レビュー欄を含むM2相当UI
+- `MockProvider`
+- Project B用の `ProviderResult` 契約
+- Stage 1/LM Studio系コードを切除したdirect conversion queue
+- 既存のテスト群
 
-### M0: 開発基盤
+Project Bでの扱い:
 
-目的: 誰でも同じ手順でアプリとテストを起動できる土台を作る。
+- UI、モデル、Mock、キューは継続利用する。
+- Stage 1 normalizer、LM Studio、辞書検索計画はMVP本線から切除済み。将来はLocal Pipeline Providerとして再導入できる。
+- MVP本線はDirect API Conversionへ寄せる。
+- `project-b-api.md` の考え方を、実装可能な小さなマイルストーンへ落とす。
 
-実装項目:
+## 3. 実装上の決定
 
-- `pyproject.toml` と `src/uttate/` 構成
-- アプリ起動用エントリーポイント
-- pytest設定、基本的なlint/format設定
-- 設定読み込みと既定値
-- READMEの初期セットアップ手順
+- パッケージ名は現行どおり `uttate` を維持する。
+- Pythonは現行どおりrepo-localな3.12環境を使い、グローバルPythonを侵襲しない。
+- `Chunk` / `Document` は当面dataclassを維持し、必要な差分だけ追加する。
+- Provider出力は共通の `ProviderResult` / `Candidate` / `UncertainItem` に正規化する。
+- GeminiProviderを第一実Providerとし、OpenAIProviderを同じcontractで実装する。
+- API呼び出しはUIスレッドで実行しない。
+- Providerごとの違いは `providers/` と `pipeline/response_parser.py` に閉じ込める。
+- API keyは `.env` または環境変数から読む。コード、README、テストデータへ直書きしない。
+- 実APIテストは通常skipし、`RUN_API_TESTS=1` のときだけ走らせる。
 
-成果物:
+## 4. マイルストーン
 
-- 空のメインウィンドウが起動する
-- 最小テストが成功する
+### B0: Project B文書と方針固定
 
-完了条件:
-
-- 新しい環境で依存関係を導入し、1コマンドでアプリとテストを実行できる
-
-### M1: データモデルと状態遷移
-
-目的: UIやLLMから独立したチャンク処理の中心モデルを確立する。
-
-実装項目:
-
-- `Chunk`、`Document`、`ChunkStatus`
-- ID、時刻、候補、採用文、不確実性を含む型
-- 状態遷移の検証
-- 書き出し時の未採用フォールバック規則
-
-テスト:
-
-- 正常な状態遷移
-- 不正な状態遷移の拒否
-- 採用文、候補A、原文のフォールバック順
-
-完了条件:
-
-- 主要状態を型とテストで表現でき、UIへ渡すデータ形が固定されている
-
-### M2: Mockによる最初の縦切りUX
-
-目的: モデル通信なしで「入力を止めない」中心体験を最初に成立させる。
+目的: ローカルStage分割MVPからAPI Provider MVPへ、作るものと作らないものを固定する。
 
 実装項目:
 
-- 2ペインのメインウィンドウ
-- 入力欄、チャンク一覧、レビュー欄、ステータスバー
-- `Enter` 送信、`Shift+Enter` 改行
-- 非同期変換キューの骨格
-- 決定的なMockプロバイダー
-- チャンク選択とUI更新
-
-テスト:
-
-- 連続送信した複数チャンクが順序を失わない
-- 変換中も入力欄が操作可能
-- 空入力が送信されない
-- ワーカー結果が該当チャンクだけを更新する
+- `docs/PROJECT_SCOPE.md` をProject B前提へ更新する。
+- `docs/IMPLEMENTATION_PLAN.md` をProject B前提へ更新する。
+- ローカルパイプラインをMVP対象外かつ将来Provider候補として明記する。
 
 完了条件:
 
-- 3チャンクを待ち時間なく連続送信し、Mock結果を順次レビューできる
+- Gemini APIで縦切り体験を作ることがMVP本線として明文化されている。
+- M4途中の辞書検索路線がMVP完成条件から外れている。
 
-### M3: プロバイダーとStage 1読み正規化
+### B1: ProviderResult契約の導入
 
-目的: 実LLMでラフ入力をひらがな・英語混じりの読みへ復元する。
+目的: UIがProvider種別に依存しない共通結果形式を固定する。
 
 実装項目:
 
-- `LLMProvider` 抽象インターフェース
-- OpenAI互換プロバイダー
-- OpenAI互換実装を利用する `LMStudioProvider` とLM Studio用設定プリセット
-- Stage 1プロンプトの外部ファイル化
-- 応答JSONのパース、型検証、エラー変換
-- タイムアウト、接続失敗、不正JSONの表示
+- `Candidate`
+- `UncertainItem`
+- `ProviderUsage`
+- `ProviderResult`
+- Provider共通エラー `ProviderError`
+- 旧 `ConversionResult` の削除
 
-テスト:
-
-- HTTP応答の成功・タイムアウト・不正JSON
-- Stage 1の必須フィールド検証
-- 失敗時の `failed` 遷移と再実行
-
-完了条件:
-
-- LM StudioまたはHTTPモックで `raw → normalized` を実行できる
-- API障害時もアプリが応答を保つ
-
-### M4: SQLite辞書検索
-
-目的: 正規化した読みから、Stage 3に渡す関連表記候補だけを抽出する。
-
-実装項目:
-
-- SQLiteスキーマと初期化処理
-- `LexiconStore` の追加・検索API
-- 完全一致、長いn-gram優先検索
-- source、priority、usage_countによる順位付け
-- 候補数上限
-- サンプル辞書の投入処理
-
-テスト:
-
-- 完全一致と長語優先
-- user/project/recent/commonの優先順
-- 1語、全体候補数の上限
-- 重複候補の整理
-- 初期サンプル語の検索
-
-完了条件:
-
-- 正規化結果から決められた上限内の関連候補を決定的に取得できる
-
-### M5: Stage 3変換と一貫したパイプライン
-
-目的: 元入力、読み、辞書候補、直前文脈からレビュー用候補を生成する。
-
-実装項目:
-
-- Stage 3プロンプトの外部ファイル化
-- candidate_1、candidate_2、uncertainの検証
-- 直前の採用済み文脈の構築
-- Stage 1 → 辞書 → Stage 3のオーケストレーション
-- キャンセル、再変換、古い応答の破棄
-- 各段階の状態・エラー表示
-
-テスト:
-
-- パイプライン全体の正常系
-- Stage 1/Stage 3それぞれの失敗系
-- 再変換時に古い結果が上書きしない
-- 直前文脈が順序どおり渡る
-- 意味を追加しないためのプロンプト回帰テスト
-
-完了条件:
-
-- 一つのチャンクが自動で `ready_for_review` まで到達する
-- 複数チャンクで結果と状態が混線しない
-
-### M6: レビューモードとキーボード操作
-
-目的: マウスなしで比較、採用、修正、次のチャンクへの移動を完了できるようにする。
-
-実装項目:
-
-- 候補A/B/原文の循環プレビュー
-- 採用、採用して次へ、インライン編集、取り消し
-- 再変換
-- 不確実箇所の表示
-- Input/Reviewモード切り替え
-- フォーカスと選択位置の維持
-
-標準キー:
-
-| 操作 | Input Mode | Review Mode |
-| --- | --- | --- |
-| Enter | チャンク送信 | 表示中候補を採用 |
-| Shift+Enter | 改行 | - |
-| Ctrl+K | Reviewへ | - |
-| Ctrl+J | Inputへ | Inputへ |
-| Tab / Shift+Tab | 通常入力 | 候補を前後に循環 |
-| Ctrl+Enter | - | 採用して次へ |
-| E | 通常入力 | 編集開始 |
-| R | 通常入力 | 再変換 |
-| Esc | 一時操作取消 | プレビュー/編集取消 |
-
-テスト:
-
-- 循環順と逆順
-- 採用後の状態、編集後の状態
-- Escで最後の採用状態へ戻る
-- Ctrl+Enterで次の未解決チャンクを選ぶ
-- 編集開始時のカーソル位置維持
-
-完了条件:
-
-- 主要レビュー作業をキーボードだけで完遂できる
-
-### M7: 永続化、辞書登録、書き出し
-
-目的: 作業結果を失わず、最終的な日本語文章として持ち出せるようにする。
-
-実装項目:
-
-- 文書とチャンクの最小永続化
-- 明示操作によるユーザー辞書登録
-- 採用時のusage_count更新
-- クリップボードへのコピー
-- UTF-8 `.txt` / `.md` 保存
-- 未採用チャンクの扱いを設定化
-
-テスト:
-
-- 保存・再読込の往復
-- 辞書登録と重複処理
-- チャンク順の保持
-- 未採用フォールバックを含む出力
-- 日本語・英語・改行のUTF-8出力
-
-完了条件:
-
-- アプリ再起動後に作業を復元でき、採用結果を外部ファイルへ正しく出力できる
-
-### M8: 品質保証とMVPリリース判定
-
-目的: 中心フローの壊れやすい箇所を確認し、試用可能なMVPとして仕上げる。
-
-実装項目:
-
-- `project.md` の初期入力5件による手動テスト
-- Mockによるエンドツーエンドテスト
-- LM Studio接続のスモークテスト手順
-- 長文、空白、記号、英語のみ、接続断の確認
-- ログの秘密情報マスキング
-- READMEの操作、設定、障害対応説明
-- MVP対象外のバックログ整理
-
-完了条件:
-
-- `docs/PROJECT_SCOPE.md` の受け入れ基準をすべて確認できる
-- 既知の制約と未解決事項がREADMEまたはリリースノートに明記される
-
-## 4. 依存関係と実施順
+推奨ファイル:
 
 ```text
-M0 開発基盤
- └─ M1 データモデル
-     └─ M2 Mock縦切りUX
-         ├─ M3 Provider + Stage 1
-         └─ M4 SQLite辞書
-              └─ M5 Stage 3統合
-                  └─ M6 レビュー操作
-                      └─ M7 永続化・出力
-                          └─ M8 品質保証
+src/uttate/providers/result.py
+src/uttate/providers/errors.py
 ```
 
-M3とM4はM2完了後に並行して進められる。M6のUI詳細はM5の結果型が固定される前からMockを使って先行検証できる。
+判断:
 
-## 5. テスト戦略
+- 既存コードのdataclass方針を尊重しつつ、JSON Schema生成が必要ならPydantic導入を検討する。
+- 導入する場合もChunk/Documentの全面Pydantic化はこのマイルストーンでは行わない。
 
-### 単体テスト
+テスト:
 
-- データモデルと状態遷移
-- 設定読み込みと秘密情報の扱い
-- JSON応答の検証
-- 辞書検索と順位付け
-- 書き出し時の文章組み立て
+- candidatesが空なら失敗
+- candidate.textが空なら失敗
+- uncertain省略時は空配列扱い
+- usageは任意
+- provider/modelが記録できる
 
-### 結合テスト
+完了条件:
 
-- Mockプロバイダーを使った変換パイプライン
-- ワーカーからモデル、モデルからUIへの更新
-- SQLiteの保存・検索・再読込
-- 再変換と世代管理
+- Mock/Gemini/OpenAIが同じ戻り値型を返せる。
 
-### UIテスト
+### B2: Response ParserとPromptの整備
 
-- キーボードイベント
-- モードとフォーカス遷移
-- 複数チャンクの連続送信
-- レビュー候補の循環、採用、編集、取消
+目的: 壊れがちなAPI応答を安全に共通形式へ正規化する。
 
-### 手動スモークテスト
+実装項目:
 
-- LM Studioへの実接続
-- `project.md` の初期テスト入力5件
-- LLM停止中、タイムアウト、不正応答
-- クリップボードとファイル出力
+- `pipeline/response_parser.py`
+- direct JSON parse
+- markdown fenced JSONの除去
+- 余分な前後テキストからJSON object抽出
+- schema validation
+- 壊れた応答の明示的な失敗化
+- API direct conversion用system prompt/user prompt
 
-モデル出力の完全一致は実LLMテストの合否条件にせず、Mockでは完全一致、実LLMでは必須JSON構造、意味保存、操作可能性を確認する。
+推奨ファイル:
 
-## 6. リスクと対策
+```text
+src/uttate/pipeline/response_parser.py
+src/uttate/prompts/api_direct_converter_system.txt
+src/uttate/prompts/api_direct_converter_user.txt
+```
+
+プロンプト要点:
+
+- 創作、要約、補足ではなく変換である。
+- 入力にない意味を追加しない。
+- 候補1はfaithful、候補2はnatural。
+- Uttate、IME、API、LLMなどの略語や固有名詞は自然なら保持する。
+- JSONのみ返す。
+
+テスト:
+
+- 正常JSON
+- fenced JSON
+- 前後に説明が混ざったJSON
+- invalid JSON
+- candidates不足
+- 空candidate
+
+完了条件:
+
+- Provider SDKの違いに関係なく、アプリ内部はProviderResultだけを扱える。
+
+### B3: SettingsとAPI key安全設計
+
+目的: OSSとして安全にProviderを切り替えられる設定基盤を作る。
+
+実装項目:
+
+- `.env.example`
+- `.gitignore` の `.env` / `.env.*` 確認
+- `python-dotenv` 導入の可否判断
+- `UTTATE_PROVIDER`
+- `GEMINI_API_KEY` / `GEMINI_MODEL`
+- `OPENAI_API_KEY` / `OPENAI_MODEL`
+- timeout、previous_context_chars
+- ログ・エラー表示でのAPI keyマスク
+
+テスト:
+
+- 環境変数からProviderを選べる
+- API key未設定時に分かりやすく失敗する
+- secret値がrepr/log用文字列に出ない
+- 既定値はmock
+
+完了条件:
+
+- API keyなしでもMockProviderでアプリが起動する。
+- API keyをrepoに含めずGemini/OpenAIへ切り替えられる。
+
+### B4: MockProviderを新契約へ移行
+
+目的: 実APIなしでProject Bの縦切りUXを開発できる状態を保つ。
+
+実装項目:
+
+- MockProviderをProviderResult契約へ対応
+- Project B代表入力の固定出力
+- previous_contextを受け取れるinterface
+- candidate_countの上限反映
+- deterministic delayによる非同期UI検証
+
+代表fixture:
+
+```text
+AIdenyuuryokuwosaisekkeisuru.
+-> AIで入力を再設計する。
+
+keyboardhabunbougudakara inputnostresswosaishoukashinakerebanaranai
+-> キーボードは文房具だから、入力のストレスを最小化しなければならない。
+```
+
+テスト:
+
+- API keyなしで変換できる
+- 2候補を返す
+- candidate_countが効く
+- UI queueが既存どおり動く
+
+完了条件:
+
+- Mockだけで「連続入力 -> 変換 -> レビュー -> 採用 -> Export」まで通る。
+
+### B5: GeminiProvider
+
+目的: Project Bの第一実ProviderとしてGemini API変換を成立させる。
+
+実装項目:
+
+- `providers/gemini.py`
+- `google-genai` dependency
+- `GEMINI_API_KEY` 読み込み
+- `GEMINI_MODEL` 読み込み
+- timeout処理
+- structured outputまたはJSON prompt
+- safety block、empty response、invalid JSON、quota/rate limitのエラー変換
+- raw API responseの既定非保存
+
+テスト:
+
+- SDK呼び出しをmockした正常系
+- API key未設定
+- empty response
+- invalid JSON
+- ProviderError変換
+- `RUN_API_TESTS=1` のときだけ実API smoke test
+
+完了条件:
+
+- GeminiProviderで代表入力3件を変換し、候補A/BをレビューUIに表示できる。
+
+### B6: OpenAIProvider
+
+目的: Provider交換可能性を実証し、Gemini専用構造にしない。
+
+実装項目:
+
+- `providers/openai.py`
+- `openai` dependency
+- `OPENAI_API_KEY` 読み込み
+- `OPENAI_MODEL` 読み込み
+- Responses APIまたは現在のSDKに合ったJSON Schema出力
+- Response Parserとの統合
+- OpenAI固有エラーのProviderError変換
+
+テスト:
+
+- SDK呼び出しをmockした正常系
+- API key未設定
+- model not found
+- rate limit
+- invalid JSON
+- `RUN_API_TESTS=1` のときだけ実API smoke test
+
+完了条件:
+
+- Provider設定をopenaiに変えても、UIとChunkモデルを変更せずに同じ操作ができる。
+
+### B7: Provider RegistryとQueue統合
+
+目的: mock/gemini/openaiを同じUIフローで切り替えられるようにする。
+
+実装項目:
+
+- `providers/registry.py`
+- settingsからProvider生成
+- conversion queueへprevious_contextを渡す
+- chunk IDと処理世代による古い結果の破棄
+- failed状態と再変換
+- provider/model/errorをchunkへ記録するか、UI表示用view modelへ載せる
+
+テスト:
+
+- provider切り替え
+- 3チャンク連続送信
+- 変換中も入力可能
+- 古い応答が新しい結果を上書きしない
+- failedから再変換できる
+
+完了条件:
+
+- Provider種別が変わっても、Enter commit、async conversion、reviewが同じコード経路で動く。
+
+### B8: Review / ExportのProject B仕上げ
+
+目的: API変換結果をユーザーが最後まで文章として扱える状態にする。
+
+実装項目:
+
+- 候補A/B/原文の循環表示
+- Enter採用
+- Ctrl+Enterで採用して次へ
+- E編集
+- R再変換
+- Esc取消
+- uncertain表示
+- clipboard export
+- `.txt` / `.md` export
+- 未採用fallback設定
+
+テスト:
+
+- Tab循環順
+- Shift+Tab逆順
+- 採用状態
+- 編集状態
+- 再変換
+- Exportのfallback
+- 日本語UTF-8出力
+
+完了条件:
+
+- キーボードだけで入力、変換、比較、採用、編集、書き出しまで完了できる。
+
+### B9: README、Contributor導線、MVP判定
+
+目的: OSSとして試せる、壊れ方が分かる、Providerを追加しやすい状態にする。
+
+実装項目:
+
+- README quickstart
+- Mock mode起動手順
+- Gemini mode設定手順
+- OpenAI mode設定手順
+- API利用時のプライバシー注意
+- API key安全注意
+- Provider追加ガイド
+- 手動テスト入力
+- 実APIテストのopt-in方法
+- 既知制約とMVP後バックログ
+
+テスト/確認:
+
+- 新規環境でMock起動
+- Gemini smoke
+- OpenAI smoke
+- API keyがログやgit管理対象に出ない
+- `docs/PROJECT_SCOPE.md` の受け入れ基準確認
+
+完了条件:
+
+- Project B MVPを第三者がMockで起動できる。
+- API keyを用意した人がGemini/OpenAIで変換体験を試せる。
+
+## 5. 依存関係と実施順
+
+```text
+B0 文書と方針固定
+  -> B1 ProviderResult契約
+    -> B2 Response Parser / Prompt
+      -> B3 Settings / API key安全設計
+        -> B4 MockProvider移行
+          -> B5 GeminiProvider
+          -> B6 OpenAIProvider
+            -> B7 Registry / Queue統合
+              -> B8 Review / Export仕上げ
+                -> B9 README / MVP判定
+```
+
+B5とB6はB1からB3完了後に並行可能。ただしB5を先に完了させ、Geminiで体験検証を
+早く行う。
+
+## 6. 既存ローカルパイプラインの扱い
+
+既存のStage 1 normalizer、LM Studio provider、辞書検索計画はProject B MVP本線から切除した。
+ただし将来のLocal Pipeline Providerとして再実装できる余地は残す。
+
+扱い:
+
+- `local-pipeline` Provider候補として将来戻す。
+- 既存テストがProject Bの進行を妨げる場合は、対象を明確に分ける。
+- READMEでは「local pipelineはexperimental/future」として扱う。
+- Gemini/OpenAI ProviderのUI契約を壊さない範囲でのみ残す。
+
+この方針により、OSSとしての拡張余地を残しながら、MVPの最短ゴールを曇らせない。
+
+## 7. テスト戦略
+
+### Unit Tests
+
+- ProviderResult validation
+- Response Parser
+- Settings/env loading
+- API key masking
+- Context Builder
+- Export fallback
+- Provider Registry
+
+### Provider Contract Tests
+
+全Providerに共通で確認する。
+
+- `convert_chunk` がProviderResultを返す
+- candidateが最低1件ある
+- candidate textが空でない
+- provider/modelが記録される
+- 失敗時はProviderErrorへ変換される
+- raw inputは失われない
+
+### UI / Integration Tests
+
+- MockProviderで3チャンク連続送信
+- 変換中の入力継続
+- Tab/Shift+Tab循環
+- Enter採用
+- E編集
+- R再変換
+- failed表示と再実行
+- clipboard/file export
+
+### Real API Smoke Tests
+
+通常はskipする。
+
+```text
+RUN_API_TESTS=1
+UTTATE_PROVIDER=gemini
+GEMINI_API_KEY=...
+```
+
+確認内容:
+
+- 代表入力がProviderResultへ正規化される
+- UIが固まらない
+- raw inputが失われない
+- API keyがログに出ない
+
+LLM出力は完全一致させない。合否はJSON構造、候補の非空性、意味保存、操作可能性で判断する。
+
+## 8. リスクと対策
 
 | リスク | 影響 | 対策 |
 | --- | --- | --- |
-| LLM応答が遅い | 中心UXを損なう | UIスレッド分離、即時入力クリア、状態表示、タイムアウト |
-| JSON形式が崩れる | パイプライン停止 | 厳格な検証、エラー表示、再変換、必要なら限定的なJSON抽出 |
-| 複数チャンクの結果が混線する | 誤った文章を採用 | chunk IDと処理世代を全処理へ伝播 |
-| モデルが意味を追加する | プロダクト目的に反する | 候補Aの保守的プロンプト、原文表示、不確実性表示、評価例 |
-| 辞書候補が多すぎる | 品質・速度低下 | 長語優先、source順位、候補数上限 |
-| ショートカットが入力文字と衝突する | 編集不能 | Review Modeでのみ単キー操作を有効化、フォーカス状態を検査 |
-| APIキーが漏れる | セキュリティ問題 | ログのマスキング、設定画面で伏字、例示値のみをコミット |
-| UIとパイプラインが密結合になる | テスト・変更が困難 | サービス境界、シグナル、Mock、純粋なモデル層 |
+| Gemini応答がJSONから外れる | チャンクが変換不能になる | structured output優先、Response Parser、failed表示、再変換 |
+| APIが遅い | 入力体験を損なう | UIスレッド分離、timeout、状態表示、入力欄即時クリア |
+| API key漏洩 | OSSとして致命的 | `.env`除外、ログマスク、README注意、テストfixture禁止 |
+| ProviderごとにUI分岐する | 拡張性が落ちる | ProviderResult契約とRegistryを先に固定 |
+| モデルが文章を盛る | Uttateの目的に反する | faithful/naturalラベル、プロンプト回帰例、原文表示 |
+| 既存Stage分割コードと衝突 | 実装が散る | Local Pipeline Provider候補として分離し、MVP本線に入れない |
+| 実APIテストがCIで不安定 | 開発速度が落ちる | 実APIはopt-in、通常はMockとSDK mockで検証 |
+| 古い応答が後着する | 誤候補を表示する | chunk IDと処理世代で破棄 |
 
-## 7. 各マイルストーン共通の完了定義
-
-各マイルストーンは次を満たして完了とする。
+## 9. 各マイルストーン共通の完了定義
 
 - 実装項目が動作する。
 - 正常系と主要失敗系のテストがある。
 - UIを変更した場合はキーボード操作とフォーカスを確認する。
-- 仕様や操作が変わった場合は文書を更新する。
-- APIキー、ローカルDB、生成物を誤ってコミットしない。
+- Providerを追加してもUI層が分岐しない。
+- API key、`.env`、raw API responseを誤ってコミットしない。
+- 文書とREADMEが実装差分に追随している。
 - 後続工程をブロックする既知の重大不具合がない。
 
-## 8. MVP後のバックログ
+## 10. MVP後のバックログ
 
-- Shorten、Smooth connection
-- ユーザーによるショートカット変更
+- Local Pipeline Provider復帰
+- Stage 1 reading normalizationのProvider化
+- SQLite/Sudachi辞書Providerまたはhint layer
+- Provider別のコスト表示
+- 詳細なsettings UI
+- ショートカット変更
 - `Alt+1` / `Alt+2` / `Alt+0` の直接採用
 - 詳細な辞書管理画面
-- 複数ドキュメント管理の高度化
-- 処理キューの優先順位変更や個別キャンセル
+- 複数ドキュメント管理
 - 配布用パッケージ、インストーラー、コード署名、自動更新
-- 変換品質の定量評価、データ収集、モデル調整
-- Tauri / Reactなど将来スタックの再評価
+- 変換品質の定量評価
+- 小型ローカルモデルのfine-tuning
 
-## 9. 最初の実装着手点
+## 11. 次の実装着手点
 
-最初の開発イテレーションではM0〜M2へ集中する。LM Studioへ接続する前に、Mockだけで「連続入力 → バックグラウンド処理 → レビュー」まで通す。これが成立した時点で中心UXを初回評価し、その後M3とM4へ進む。
+B0は本書とスコープ文書の更新で完了とする。
+
+次に着手するなら、B1から始める。
+
+最小の最初の実装単位:
+
+1. `ProviderResult` / `Candidate` / `UncertainItem` を追加する。
+2. MockProviderを新契約へ対応させる。
+3. Response Parserのテストを書き、壊れたJSONをfailedにできるようにする。
+4. その後GeminiProviderへ進む。
+
+この順番なら、APIキーなしで既存UIを壊さずにProject Bの土台を作れる。

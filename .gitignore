@@ -18,6 +18,9 @@ htmlcov/
 .artifacts/
 
 # Local application data and secrets
+.env
+.env.*
+!.env.example
 settings.json
 *.sqlite
 *.sqlite3

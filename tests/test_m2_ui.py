@@ -6,23 +6,40 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
 from uttate.models import ChunkStatus
-from uttate.providers.base import ConversionResult
+from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.mock import MockProvider
 from uttate.ui.main_window import MainWindow
 
 
 class VariableDelayProvider:
-    def convert(self, raw_text: str) -> ConversionResult:
+    def convert(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> ProviderResult:
+        del previous_context
         time.sleep(0.08 if raw_text == "slow first" else 0.01)
-        return ConversionResult(
-            normalized=f"normalized:{raw_text}",
-            candidate_1=f"A:{raw_text}",
-            candidate_2=f"B:{raw_text}",
+        return ProviderResult(
+            candidates=(
+                Candidate("faithful", f"A:{raw_text}"),
+                Candidate("natural", f"B:{raw_text}"),
+            )[:candidate_count],
+            provider="variable-delay",
+            model="test",
         )
 
 
 class FailingProvider:
-    def convert(self, raw_text: str) -> ConversionResult:
+    def convert(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> ProviderResult:
+        del previous_context, candidate_count
         raise RuntimeError(f"cannot convert {raw_text}")
 
 
@@ -107,7 +124,7 @@ def test_selected_chunk_review_refreshes_after_conversion(qtbot) -> None:
     submit(qtbot, window, "review me")
     wait_until_idle(qtbot, window)
 
-    assert window.review_panel.status_label.text() == "Status: ready_for_review"
+    assert window.review_panel.status_label.text() == "Status: ready_for_review / mock:mock"
     assert window.review_panel.raw_field.toPlainText() == "review me"
     assert window.review_panel.candidate_1_field.toPlainText() == "変換候補A: review me"
 

@@ -9,19 +9,26 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
-    """Connection settings for an OpenAI-compatible provider."""
+    """Provider selection for the Project B direct-conversion branch.
 
-    type: str = "lmstudio"
-    base_url: str = "http://127.0.0.1:1234/v1"
-    api_key: str = "lm-studio"
+    API keys intentionally come from environment variables or `.env`, not settings.json.
+    This keeps local secrets out of the user-editable config file that OSS contributors
+    are likely to share in issues.
+    """
+
+    type: str = "mock"
     model: str = ""
-    timeout_seconds: float = 60.0
-    reasoning_effort: str = "none"
+    timeout_seconds: float = 30.0
+    previous_context_chars: int = 600
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash-lite"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-nano"
 
 
 @dataclass(frozen=True, slots=True)
 class AppSettings:
-    """M0 application settings with safe local defaults."""
+    """Application settings with safe OSS defaults."""
 
     provider: ProviderSettings = field(default_factory=ProviderSettings)
 
@@ -34,12 +41,22 @@ def default_settings_path() -> Path:
     return base_directory / "settings.json"
 
 
-def load_settings(path: Path | None = None) -> AppSettings:
-    """Load settings from JSON, applying defaults for omitted fields."""
+def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> AppSettings:
+    """Load settings from JSON plus environment variables.
+
+    Precedence is deliberately simple:
+    defaults < settings.json < .env < real environment variables.
+
+    The real environment wins so CI and local shells can override a checked-out `.env`
+    without editing files.
+    """
 
     settings_path = path or default_settings_path()
+    file_env = _read_env_file(env_path or Path.cwd() / ".env")
+    merged_env = {**file_env, **os.environ}
+
     if not settings_path.exists():
-        return AppSettings()
+        return AppSettings(provider=_provider_from_sources({}, merged_env))
 
     with settings_path.open(encoding="utf-8") as settings_file:
         raw_data: Any = json.load(settings_file)
@@ -51,27 +68,43 @@ def load_settings(path: Path | None = None) -> AppSettings:
     if not isinstance(raw_provider, dict):
         raise ValueError("The provider setting must be a JSON object.")
 
+    return AppSettings(provider=_provider_from_sources(raw_provider, merged_env))
+
+
+def _provider_from_sources(raw_provider: dict[str, Any], env: dict[str, str]) -> ProviderSettings:
     defaults = ProviderSettings()
-    provider = ProviderSettings(
-        type=_string_value(raw_provider, "type", defaults.type),
-        base_url=_string_value(raw_provider, "base_url", defaults.base_url),
-        api_key=_string_value(raw_provider, "api_key", defaults.api_key),
-        model=_string_value(raw_provider, "model", defaults.model),
+    provider_type = env.get("UTTATE_PROVIDER") or _string_value(raw_provider, "type", defaults.type)
+    return ProviderSettings(
+        type=provider_type,
+        model=_model_for_provider(provider_type, raw_provider, env, defaults),
         timeout_seconds=_positive_number_value(
-            raw_provider, "timeout_seconds", defaults.timeout_seconds
+            raw_provider,
+            "timeout_seconds",
+            _float_env(env, "UTTATE_TIMEOUT_SECONDS", defaults.timeout_seconds),
         ),
-        reasoning_effort=_string_value(raw_provider, "reasoning_effort", defaults.reasoning_effort),
+        previous_context_chars=_positive_int_value(
+            raw_provider,
+            "previous_context_chars",
+            _int_env(env, "UTTATE_PREVIOUS_CONTEXT_CHARS", defaults.previous_context_chars),
+        ),
+        gemini_api_key=env.get("GEMINI_API_KEY", ""),
+        gemini_model=env.get("GEMINI_MODEL", defaults.gemini_model),
+        openai_api_key=env.get("OPENAI_API_KEY", ""),
+        openai_model=env.get("OPENAI_MODEL", defaults.openai_model),
     )
-    return AppSettings(provider=provider)
 
 
 def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
-    """Persist settings as human-readable UTF-8 JSON."""
+    """Persist non-secret settings as human-readable UTF-8 JSON."""
 
     settings_path = path or default_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
+    provider_data = asdict(settings.provider)
+    # Never write API keys into settings.json. They belong to env vars or an ignored .env file.
+    provider_data.pop("gemini_api_key", None)
+    provider_data.pop("openai_api_key", None)
     with settings_path.open("w", encoding="utf-8") as settings_file:
-        json.dump(asdict(settings), settings_file, ensure_ascii=False, indent=2)
+        json.dump({"provider": provider_data}, settings_file, ensure_ascii=False, indent=2)
         settings_file.write("\n")
     return settings_path
 
@@ -88,3 +121,72 @@ def _positive_number_value(values: dict[str, Any], key: str, default: float) -> 
     if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
         raise ValueError(f"The {key} setting must be a positive number.")
     return float(value)
+
+
+def _positive_int_value(values: dict[str, Any], key: str, default: int) -> int:
+    value = values.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"The {key} setting must be a positive integer.")
+    return value
+
+
+def _float_env(env: dict[str, str], key: str, default: float) -> float:
+    value = env.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise ValueError(f"The {key} environment variable must be a number.") from error
+    if result <= 0:
+        raise ValueError(f"The {key} environment variable must be positive.")
+    return result
+
+
+def _int_env(env: dict[str, str], key: str, default: int) -> int:
+    value = env.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise ValueError(f"The {key} environment variable must be an integer.") from error
+    if result <= 0:
+        raise ValueError(f"The {key} environment variable must be positive.")
+    return result
+
+
+def _model_for_provider(
+    provider_type: str,
+    raw_provider: dict[str, Any],
+    env: dict[str, str],
+    defaults: ProviderSettings,
+) -> str:
+    if provider_type == "gemini":
+        return env.get("GEMINI_MODEL", defaults.gemini_model)
+    if provider_type == "openai":
+        return env.get("OPENAI_MODEL", defaults.openai_model)
+    return _string_value(raw_provider, "model", defaults.model)
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """Read a tiny dotenv subset without adding a dependency during the cleanup step.
+
+    Supported lines are `KEY=value`, optional quotes, and comments. That is enough for
+    local API keys while keeping this first Project B cleanup dependency-neutral.
+    """
+
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values

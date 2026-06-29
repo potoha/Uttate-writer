@@ -12,6 +12,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     settings = load_settings()
     conversion_provider = create_conversion_provider(settings.provider)
-    application, window = create_application(argv, conversion_provider)
+    application, window = create_application(argv, conversion_provider, settings=settings)
     window.show()
     return application.exec()

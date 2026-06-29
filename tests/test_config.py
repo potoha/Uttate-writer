@@ -32,6 +32,29 @@ def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkey
     assert settings.provider.gemini_api_key == "dummy-1234567890"
 
 
+def test_env_file_loads_lmstudio_compatible_settings(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "UTTATE_PROVIDER=lmstudio",
+                "LMSTUDIO_BASE_URL=http://localhost:1234/v1",
+                "LMSTUDIO_API_KEY=local-key",
+                "LMSTUDIO_MODEL=loaded-model",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(tmp_path / "missing.json", env_path=env_path)
+
+    assert settings.provider.type == "lmstudio"
+    assert settings.provider.compatible_base_url == "http://localhost:1234/v1"
+    assert settings.provider.compatible_api_key == "local-key"
+    assert settings.provider.compatible_model == "loaded-model"
+
+
 def test_settings_round_trip(tmp_path) -> None:
     settings_path = tmp_path / "nested" / "settings.json"
     expected = AppSettings(

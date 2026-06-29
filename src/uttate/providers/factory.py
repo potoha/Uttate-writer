@@ -1,32 +1,11 @@
 from __future__ import annotations
 
 from uttate.config import ProviderSettings
-from uttate.providers.base import ConversionProvider, ProviderError
+from uttate.providers.base import ConversionProvider
 from uttate.providers.gemini import GeminiProvider
 from uttate.providers.mock import MockProvider
-
-
-class UnimplementedProvider:
-    """Explicit placeholder for providers planned after the current provider milestone.
-
-    Keeping a clear failure is friendlier for OSS users than silently falling back to Mock:
-    if someone selects an unfinished provider, they should see why the chunk failed.
-    """
-
-    def __init__(self, provider_type: str) -> None:
-        self.provider_type = provider_type
-
-    def convert(
-        self,
-        raw_text: str,
-        *,
-        previous_context: str = "",
-        candidate_count: int = 2,
-    ):
-        del raw_text, previous_context, candidate_count
-        raise ProviderError(
-            f"{self.provider_type} provider is not implemented yet in this cleanup step."
-        )
+from uttate.providers.openai import OpenAIProvider
+from uttate.providers.openai_compatible import OpenAICompatibleProvider
 
 
 def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider:
@@ -41,5 +20,19 @@ def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider
             timeout_seconds=settings.timeout_seconds,
         )
     if settings.type == "openai":
-        return UnimplementedProvider(settings.type)
+        return OpenAIProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.timeout_seconds,
+            endpoint=f"{settings.openai_base_url.rstrip('/')}/responses",
+        )
+    if settings.type in {"lmstudio", "openai_compatible"}:
+        return OpenAICompatibleProvider(
+            base_url=settings.compatible_base_url,
+            api_key=settings.compatible_api_key,
+            model=settings.compatible_model,
+            provider_name=settings.type,
+            timeout_seconds=settings.timeout_seconds,
+            reasoning_effort="none" if settings.type == "lmstudio" else None,
+        )
     raise ValueError(f"Unsupported provider type: {settings.type}")

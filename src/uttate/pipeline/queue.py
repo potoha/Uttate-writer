@@ -56,6 +56,11 @@ class ConversionQueue(QObject):
     def active_count(self) -> int:
         return self._active_count
 
+    def set_provider(self, provider: ConversionProvider) -> None:
+        """Use a new provider for future chunks without disturbing active workers."""
+
+        self._provider = provider
+
     def enqueue(self, chunk: Chunk) -> None:
         if chunk.id in self._workers:
             raise ValueError(f"Chunk {chunk.id} is already being converted.")

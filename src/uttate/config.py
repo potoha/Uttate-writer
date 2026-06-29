@@ -24,6 +24,10 @@ class ProviderSettings:
     gemini_model: str = "gemini-2.5-flash-lite"
     openai_api_key: str = ""
     openai_model: str = "gpt-5-nano"
+    openai_base_url: str = "https://api.openai.com/v1"
+    compatible_base_url: str = "http://127.0.0.1:1234/v1"
+    compatible_api_key: str = "lm-studio"
+    compatible_model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +95,25 @@ def _provider_from_sources(raw_provider: dict[str, Any], env: dict[str, str]) ->
         gemini_model=env.get("GEMINI_MODEL", defaults.gemini_model),
         openai_api_key=env.get("OPENAI_API_KEY", ""),
         openai_model=env.get("OPENAI_MODEL", defaults.openai_model),
+        openai_base_url=env.get("OPENAI_BASE_URL", defaults.openai_base_url),
+        compatible_base_url=_compatible_env(
+            env,
+            "LMSTUDIO_BASE_URL",
+            "OPENAI_COMPATIBLE_BASE_URL",
+            defaults.compatible_base_url,
+        ),
+        compatible_api_key=_compatible_env(
+            env,
+            "LMSTUDIO_API_KEY",
+            "OPENAI_COMPATIBLE_API_KEY",
+            defaults.compatible_api_key,
+        ),
+        compatible_model=_compatible_env(
+            env,
+            "LMSTUDIO_MODEL",
+            "OPENAI_COMPATIBLE_MODEL",
+            defaults.compatible_model,
+        ),
     )
 
 
@@ -166,7 +189,26 @@ def _model_for_provider(
         return env.get("GEMINI_MODEL", defaults.gemini_model)
     if provider_type == "openai":
         return env.get("OPENAI_MODEL", defaults.openai_model)
+    if provider_type in {"lmstudio", "openai_compatible"}:
+        return _compatible_env(
+            env,
+            "LMSTUDIO_MODEL",
+            "OPENAI_COMPATIBLE_MODEL",
+            defaults.compatible_model,
+        )
     return _string_value(raw_provider, "model", defaults.model)
+
+
+def _compatible_env(
+    env: dict[str, str],
+    primary_key: str,
+    fallback_key: str,
+    default: str,
+) -> str:
+    primary = env.get(primary_key)
+    if primary is not None:
+        return primary
+    return env.get(fallback_key, default)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:

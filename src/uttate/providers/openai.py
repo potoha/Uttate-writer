@@ -13,18 +13,13 @@ from uttate.providers.direct_conversion import (
     load_system_prompt,
 )
 
-GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
-class GeminiProvider(ConversionProvider):
-    """Gemini REST provider for Project B direct conversion.
+class OpenAIProvider(ConversionProvider):
+    """OpenAI Responses API provider for Project B direct conversion."""
 
-    The implementation uses `httpx`, already present in the project, instead of adding a
-    new SDK dependency during the MVP path. That keeps repo-local setup predictable while
-    still using Google's structured JSON response contract.
-    """
-
-    name = "gemini"
+    name = "openai"
 
     def __init__(
         self,
@@ -33,12 +28,12 @@ class GeminiProvider(ConversionProvider):
         model: str,
         timeout_seconds: float = 30.0,
         transport: httpx.BaseTransport | None = None,
-        endpoint: str = GEMINI_INTERACTIONS_URL,
+        endpoint: str = OPENAI_RESPONSES_URL,
     ) -> None:
         if not api_key.strip():
-            raise ProviderError("GEMINI_API_KEY is not set.")
+            raise ProviderError("OPENAI_API_KEY is not set.")
         if not model.strip():
-            raise ProviderError("GEMINI_MODEL is not set.")
+            raise ProviderError("OPENAI_MODEL is not set.")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive.")
 
@@ -63,23 +58,23 @@ class GeminiProvider(ConversionProvider):
 
         payload = self._build_payload(raw_text, previous_context, candidate_count)
         headers = {
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "x-goog-api-key": self.api_key,
         }
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self._transport) as client:
                 response = client.post(self.endpoint, headers=headers, json=payload)
                 response.raise_for_status()
         except httpx.TimeoutException as error:
-            message = f"Gemini timed out after {self.timeout_seconds:g} seconds."
+            message = f"OpenAI timed out after {self.timeout_seconds:g} seconds."
             raise ProviderError(message) from error
         except httpx.HTTPStatusError as error:
-            raise ProviderError(_http_error_message(error.response)) from error
+            raise ProviderError(_http_error_message("OpenAI API", error.response)) from error
         except httpx.RequestError as error:
-            raise ProviderError("Could not connect to Gemini API.") from error
+            raise ProviderError("Could not connect to OpenAI API.") from error
 
-        response_data = _response_json(response)
-        output_text = _output_text(response_data)
+        response_data = _response_json(response, "OpenAI")
+        output_text = _output_text(response_data, "OpenAI")
         return parse_provider_result(
             output_text,
             provider=self.name,
@@ -96,68 +91,64 @@ class GeminiProvider(ConversionProvider):
     ) -> JsonObject:
         return {
             "model": self.model,
-            "input": _build_prompt(
-                self._system_prompt,
+            "instructions": self._system_prompt,
+            "input": build_conversion_prompt(
+                "",
                 raw_text=raw_text,
                 previous_context=previous_context,
                 candidate_count=candidate_count,
-            ),
+            ).strip(),
             "temperature": 0.2,
             "max_output_tokens": 1024,
-            "response_format": {
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": CONVERSION_SCHEMA,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "uttate_conversion_result",
+                    "schema": CONVERSION_SCHEMA,
+                    "strict": True,
+                }
             },
         }
 
 
-def _build_prompt(
-    system_prompt: str,
-    *,
-    raw_text: str,
-    previous_context: str,
-    candidate_count: int,
-) -> str:
-    return build_conversion_prompt(
-        system_prompt,
-        raw_text=raw_text,
-        previous_context=previous_context,
-        candidate_count=candidate_count,
-    )
-
-
-def _response_json(response: httpx.Response) -> JsonObject:
+def _response_json(response: httpx.Response, provider_label: str) -> JsonObject:
     try:
         decoded: Any = response.json()
     except ValueError as error:
-        raise ProviderError("Gemini response was not valid JSON.") from error
+        raise ProviderError(f"{provider_label} response was not valid JSON.") from error
     if not isinstance(decoded, dict):
-        raise ProviderError("Gemini response root must be an object.")
+        raise ProviderError(f"{provider_label} response root must be an object.")
     return decoded
 
 
-def _output_text(response_data: JsonObject) -> str:
+def _output_text(response_data: JsonObject, provider_label: str) -> str:
     output_text = response_data.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text
 
-    # Fallback for generateContent-like payloads. This keeps the provider resilient if a
-    # user proxies Gemini through a compatible endpoint with the older response shape.
     try:
-        parts = response_data["candidates"][0]["content"]["parts"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise ProviderError("Gemini response did not include output_text.") from error
-    if not isinstance(parts, list):
-        raise ProviderError("Gemini response parts must be an array.")
-    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
-    if not text.strip():
-        raise ProviderError("Gemini response text was empty.")
-    return text
+        output = response_data["output"]
+    except KeyError as error:
+        raise ProviderError(f"{provider_label} response did not include output_text.") from error
+    if not isinstance(output, list):
+        raise ProviderError(f"{provider_label} response output must be an array.")
+
+    texts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+    joined = "".join(texts)
+    if not joined.strip():
+        raise ProviderError(f"{provider_label} response text was empty.")
+    return joined
 
 
-def _http_error_message(response: httpx.Response) -> str:
+def _http_error_message(provider_label: str, response: httpx.Response) -> str:
     detail = response.text.strip().replace("\n", " ")[:300]
-    # Do not include request headers or URLs with secrets. The API key is sent only in a
-    # header, so the user-visible message can safely mention status and body detail.
-    return f"Gemini API returned HTTP {response.status_code}: {detail}"
+    return f"{provider_label} returned HTTP {response.status_code}: {detail}"

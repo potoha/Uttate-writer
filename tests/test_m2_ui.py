@@ -5,6 +5,7 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
+from uttate.config import AppSettings, ProviderSettings
 from uttate.models import ChunkStatus
 from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.mock import MockProvider
@@ -140,3 +141,16 @@ def test_provider_failure_marks_only_its_chunk_failed(qtbot) -> None:
     assert chunk.status == ChunkStatus.FAILED
     assert chunk.error_message == "cannot convert broken"
     assert window.input_panel.editor.isEnabled()
+
+
+def test_provider_switch_updates_future_chunks(qtbot) -> None:
+    settings = AppSettings(provider=ProviderSettings(type="mock"))
+    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+
+    window.provider_panel.provider_combo.setCurrentIndex(
+        window.provider_panel.provider_combo.findData("lmstudio")
+    )
+
+    assert window.provider_panel.provider_combo.currentData() == "lmstudio"
+    assert "auto-detect" in window.provider_panel.model_label.text()

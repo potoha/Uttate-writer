@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.spec
 
 # Local environments managed by uv
 .venv/
@@ -16,6 +17,8 @@ build/
 .coverage
 htmlcov/
 .artifacts/
+logs/
+*.log
 
 # Local application data and secrets
 .env

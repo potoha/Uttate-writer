@@ -57,20 +57,34 @@ def test_factory_creates_lmstudio_compatible_provider() -> None:
 
 def test_gemini_provider_posts_structured_request_and_parses_output() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == "https://generativelanguage.googleapis.com/v1beta/interactions"
+        assert (
+            request.url
+            == "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent"
+        )
         assert request.headers["x-goog-api-key"] == "dummy-1234567890"
         payload = request.read().decode("utf-8")
-        assert "gemini-test" in payload
         assert "AIdenyuuryokuwosaisekkeisuru." in payload
+        assert "generationConfig" in payload
+        assert "responseMimeType" in payload
         return httpx.Response(
             200,
             json={
-                "output_text": (
-                    '{"candidates":['
-                    '{"label":"faithful","text":"AIで入力を再設計する。"},'
-                    '{"label":"natural","text":"AIを使って入力を再設計する。"}'
-                    '],"uncertain":[]}'
-                )
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": (
+                                        '{"candidates":['
+                                        '{"label":"faithful","text":"AIで入力を再設計する。"},'
+                                        '{"label":"natural","text":"AIを使って入力を再設計する。"}'
+                                        '],"uncertain":[]}'
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
             },
         )
 

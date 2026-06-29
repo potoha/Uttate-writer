@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import httpx
@@ -13,7 +15,8 @@ from uttate.providers.direct_conversion import (
     load_system_prompt,
 )
 
-GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+LOGGER = logging.getLogger(__name__)
 
 
 class GeminiProvider(ConversionProvider):
@@ -33,7 +36,7 @@ class GeminiProvider(ConversionProvider):
         model: str,
         timeout_seconds: float = 30.0,
         transport: httpx.BaseTransport | None = None,
-        endpoint: str = GEMINI_INTERACTIONS_URL,
+        endpoint: str = GEMINI_API_BASE_URL,
     ) -> None:
         if not api_key.strip():
             raise ProviderError("GEMINI_API_KEY is not set.")
@@ -45,7 +48,7 @@ class GeminiProvider(ConversionProvider):
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
-        self.endpoint = endpoint
+        self.endpoint = endpoint.rstrip("/")
         self._transport = transport
         self._system_prompt = load_system_prompt()
 
@@ -66,17 +69,7 @@ class GeminiProvider(ConversionProvider):
             "Content-Type": "application/json",
             "x-goog-api-key": self.api_key,
         }
-        try:
-            with httpx.Client(timeout=self.timeout_seconds, transport=self._transport) as client:
-                response = client.post(self.endpoint, headers=headers, json=payload)
-                response.raise_for_status()
-        except httpx.TimeoutException as error:
-            message = f"Gemini timed out after {self.timeout_seconds:g} seconds."
-            raise ProviderError(message) from error
-        except httpx.HTTPStatusError as error:
-            raise ProviderError(_http_error_message(error.response)) from error
-        except httpx.RequestError as error:
-            raise ProviderError("Could not connect to Gemini API.") from error
+        response = self._post_with_retries(headers, payload)
 
         response_data = _response_json(response)
         output_text = _output_text(response_data)
@@ -95,21 +88,76 @@ class GeminiProvider(ConversionProvider):
         candidate_count: int,
     ) -> JsonObject:
         return {
-            "model": self.model,
-            "input": _build_prompt(
-                self._system_prompt,
-                raw_text=raw_text,
-                previous_context=previous_context,
-                candidate_count=candidate_count,
-            ),
-            "temperature": 0.2,
-            "max_output_tokens": 1024,
-            "response_format": {
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": CONVERSION_SCHEMA,
+            "systemInstruction": {"parts": [{"text": self._system_prompt}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": _build_prompt(
+                                "",
+                                raw_text=raw_text,
+                                previous_context=previous_context,
+                                candidate_count=candidate_count,
+                            ).strip()
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 1024,
+                "responseMimeType": "application/json",
+                "responseSchema": CONVERSION_SCHEMA,
             },
         }
+
+    def _generate_content_url(self) -> str:
+        model = self.model.removeprefix("models/")
+        return f"{self.endpoint}/models/{model}:generateContent"
+
+    def _post_with_retries(
+        self,
+        headers: dict[str, str],
+        payload: JsonObject,
+    ) -> httpx.Response:
+        attempts = 3
+        url = self._generate_content_url()
+        for attempt in range(1, attempts + 1):
+            try:
+                with httpx.Client(
+                    timeout=self.timeout_seconds,
+                    transport=self._transport,
+                ) as client:
+                    response = client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    return response
+            except httpx.TimeoutException as error:
+                message = f"Gemini timed out after {self.timeout_seconds:g} seconds."
+                LOGGER.exception("Gemini timeout model=%s attempt=%s", self.model, attempt)
+                raise ProviderError(message) from error
+            except httpx.HTTPStatusError as error:
+                status_code = error.response.status_code
+                message = _http_error_message(error.response)
+                LOGGER.warning(
+                    "Gemini HTTP failure status=%s model=%s attempt=%s detail=%s",
+                    status_code,
+                    self.model,
+                    attempt,
+                    _http_error_detail(error.response),
+                )
+                if status_code == 503 and attempt < attempts:
+                    time.sleep(float(attempt))
+                    continue
+                raise ProviderError(message) from error
+            except httpx.RequestError as error:
+                LOGGER.exception(
+                    "Gemini connection failure model=%s attempt=%s",
+                    self.model,
+                    attempt,
+                )
+                raise ProviderError("Could not connect to Gemini API.") from error
+        raise ProviderError("Gemini request failed after retries.")
 
 
 def _build_prompt(
@@ -157,7 +205,9 @@ def _output_text(response_data: JsonObject) -> str:
 
 
 def _http_error_message(response: httpx.Response) -> str:
+    return f"Gemini API returned HTTP {response.status_code}: {_http_error_detail(response)}"
+
+
+def _http_error_detail(response: httpx.Response) -> str:
     detail = response.text.strip().replace("\n", " ")[:300]
-    # Do not include request headers or URLs with secrets. The API key is sent only in a
-    # header, so the user-visible message can safely mention status and body detail.
-    return f"Gemini API returned HTTP {response.status_code}: {detail}"
+    return detail

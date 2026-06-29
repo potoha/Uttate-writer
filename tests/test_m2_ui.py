@@ -140,6 +140,7 @@ def test_provider_failure_marks_only_its_chunk_failed(qtbot) -> None:
     chunk = window.document.chunks[0]
     assert chunk.status == ChunkStatus.FAILED
     assert chunk.error_message == "cannot convert broken"
+    assert window.review_panel.error_field.toPlainText() == "cannot convert broken"
     assert window.input_panel.editor.isEnabled()
 
 

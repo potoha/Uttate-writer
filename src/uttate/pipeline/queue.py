@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from uttate.models import Chunk, ChunkStatus
 from uttate.providers.base import ConversionProvider, ProviderResult
+
+LOGGER = logging.getLogger(__name__)
 
 
 class _WorkerSignals(QObject):
@@ -24,6 +28,12 @@ class _ConversionWorker(QRunnable):
         try:
             result = self.provider.convert(self.raw_text)
         except Exception as error:  # noqa: BLE001 - worker errors must return to the UI
+            LOGGER.exception(
+                "Conversion worker failed chunk_id=%s provider=%s raw_length=%s",
+                self.chunk_id,
+                type(self.provider).__name__,
+                len(self.raw_text),
+            )
             self.signals.failed.emit(self.chunk_id, str(error) or type(error).__name__)
             return
         self.signals.completed.emit(self.chunk_id, result)
@@ -90,6 +100,7 @@ class ConversionQueue(QObject):
                 raise TypeError("The conversion provider returned an invalid result.")
             self._apply_result(chunk, raw_result)
         except Exception as error:  # noqa: BLE001 - convert pipeline errors to chunk failures
+            LOGGER.exception("Failed to apply provider result chunk_id=%s", chunk_id)
             self._mark_failed(chunk, str(error) or type(error).__name__)
         finally:
             self.chunk_updated.emit(chunk_id)
@@ -98,6 +109,7 @@ class ConversionQueue(QObject):
     @Slot(str, str)
     def _handle_failed(self, chunk_id: str, message: str) -> None:
         chunk = self._chunks[chunk_id]
+        LOGGER.warning("Marking chunk failed chunk_id=%s message=%s", chunk_id, message)
         self._mark_failed(chunk, message)
         self.chunk_updated.emit(chunk_id)
         self._finish_worker(chunk_id)

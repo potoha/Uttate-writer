@@ -19,6 +19,7 @@ class ReviewPanel(QWidget):
         self.candidate_1_field = self._field("Candidate A")
         self.candidate_2_field = self._field("Candidate B")
         self.uncertain_field = self._field("Uncertain")
+        self.error_field = self._field("Error")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -29,6 +30,7 @@ class ReviewPanel(QWidget):
             ("Candidate A", self.candidate_1_field),
             ("Candidate B", self.candidate_2_field),
             ("Uncertain", self.uncertain_field),
+            ("Error", self.error_field),
         ):
             layout.addWidget(QLabel(label))
             layout.addWidget(field)
@@ -38,7 +40,7 @@ class ReviewPanel(QWidget):
     def show_chunk(self, chunk: Chunk | None) -> None:
         if chunk is None:
             self.status_label.setText("チャンクを選択してください。")
-            values = ("", "", "", "")
+            values = ("", "", "", "", "")
         else:
             provider = f" / {chunk.provider}:{chunk.model}" if chunk.provider else ""
             self.status_label.setText(f"Status: {chunk.status.value}{provider}")
@@ -52,6 +54,7 @@ class ReviewPanel(QWidget):
                 chunk.candidate_1 or "",
                 chunk.candidate_2 or "",
                 uncertainty,
+                chunk.error_message or "",
             )
 
         for field, value in zip(
@@ -60,6 +63,7 @@ class ReviewPanel(QWidget):
                 self.candidate_1_field,
                 self.candidate_2_field,
                 self.uncertain_field,
+                self.error_field,
             ),
             values,
             strict=True,

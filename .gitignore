@@ -19,6 +19,10 @@ htmlcov/
 .artifacts/
 logs/
 *.log
+data/sft/
+data/datasets/
+data/candidates*.jsonl
+data/seeds.private.jsonl
 
 # Local application data and secrets
 .env

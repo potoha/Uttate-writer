@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import resources
 
 from uttate.models import JsonObject
+from uttate.protected_input import parse_protected_input, protected_terms_prompt
 
 CONVERSION_SCHEMA: JsonObject = {
     "type": "object",
@@ -56,9 +57,11 @@ def build_conversion_prompt(
     """Build the user-visible payload shared by Gemini/OpenAI/compatible providers."""
 
     context = previous_context.strip() or "(なし)"
+    protected_input = parse_protected_input(raw_text.strip())
     return (
         f"{system_prompt}\n\n"
         f"候補数: {candidate_count}\n\n"
         f"直前の文脈:\n{context}\n\n"
-        f"入力:\n{raw_text.strip()}\n"
+        f"{protected_terms_prompt(protected_input.terms)}\n\n"
+        f"入力:\n{protected_input.text}\n"
     )

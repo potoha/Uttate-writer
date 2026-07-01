@@ -31,10 +31,19 @@ class ProviderSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetCaptureSettings:
+    """Local opt-in capture settings for review-approved training candidates."""
+
+    capture_enabled: bool = False
+    capture_store_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     """Application settings with safe OSS defaults."""
 
     provider: ProviderSettings = field(default_factory=ProviderSettings)
+    dataset: DatasetCaptureSettings = field(default_factory=DatasetCaptureSettings)
 
 
 def default_settings_path() -> Path:
@@ -43,6 +52,12 @@ def default_settings_path() -> Path:
     configured_directory = os.environ.get("UTTATE_CONFIG_DIR")
     base_directory = Path(configured_directory) if configured_directory else Path.home() / ".uttate"
     return base_directory / "settings.json"
+
+
+def default_dataset_capture_path() -> Path:
+    """Return the default local candidate store used by review-mode capture."""
+
+    return default_settings_path().parent / "dataset_candidates.jsonl"
 
 
 def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> AppSettings:
@@ -60,7 +75,10 @@ def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> 
     merged_env = {**file_env, **os.environ}
 
     if not settings_path.exists():
-        return AppSettings(provider=_provider_from_sources({}, merged_env))
+        return AppSettings(
+            provider=_provider_from_sources({}, merged_env),
+            dataset=_dataset_from_sources({}, merged_env),
+        )
 
     with settings_path.open(encoding="utf-8") as settings_file:
         raw_data: Any = json.load(settings_file)
@@ -72,7 +90,14 @@ def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> 
     if not isinstance(raw_provider, dict):
         raise ValueError("The provider setting must be a JSON object.")
 
-    return AppSettings(provider=_provider_from_sources(raw_provider, merged_env))
+    raw_dataset = raw_data.get("dataset", {})
+    if not isinstance(raw_dataset, dict):
+        raise ValueError("The dataset setting must be a JSON object.")
+
+    return AppSettings(
+        provider=_provider_from_sources(raw_provider, merged_env),
+        dataset=_dataset_from_sources(raw_dataset, merged_env),
+    )
 
 
 def _provider_from_sources(raw_provider: dict[str, Any], env: dict[str, str]) -> ProviderSettings:
@@ -117,6 +142,32 @@ def _provider_from_sources(raw_provider: dict[str, Any], env: dict[str, str]) ->
     )
 
 
+def _dataset_from_sources(
+    raw_dataset: dict[str, Any],
+    env: dict[str, str],
+) -> DatasetCaptureSettings:
+    defaults = DatasetCaptureSettings()
+    if env.get("UTTATE_DATASET_CAPTURE_ENABLED") not in {None, ""}:
+        capture_enabled = _bool_env(
+            env,
+            "UTTATE_DATASET_CAPTURE_ENABLED",
+            defaults.capture_enabled,
+        )
+    else:
+        capture_enabled = _bool_value(
+            raw_dataset,
+            "capture_enabled",
+            defaults.capture_enabled,
+        )
+    return DatasetCaptureSettings(
+        capture_enabled=capture_enabled,
+        capture_store_path=env.get(
+            "UTTATE_DATASET_CAPTURE_STORE",
+            _string_value(raw_dataset, "capture_store_path", defaults.capture_store_path),
+        ),
+    )
+
+
 def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
     """Persist non-secret settings as human-readable UTF-8 JSON."""
 
@@ -127,7 +178,15 @@ def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
     provider_data.pop("gemini_api_key", None)
     provider_data.pop("openai_api_key", None)
     with settings_path.open("w", encoding="utf-8") as settings_file:
-        json.dump({"provider": provider_data}, settings_file, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "provider": provider_data,
+                "dataset": asdict(settings.dataset),
+            },
+            settings_file,
+            ensure_ascii=False,
+            indent=2,
+        )
         settings_file.write("\n")
     return settings_path
 
@@ -150,6 +209,13 @@ def _positive_int_value(values: dict[str, Any], key: str, default: int) -> int:
     value = values.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"The {key} setting must be a positive integer.")
+    return value
+
+
+def _bool_value(values: dict[str, Any], key: str, default: bool) -> bool:
+    value = values.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"The {key} setting must be a boolean.")
     return value
 
 
@@ -177,6 +243,18 @@ def _int_env(env: dict[str, str], key: str, default: int) -> int:
     if result <= 0:
         raise ValueError(f"The {key} environment variable must be positive.")
     return result
+
+
+def _bool_env(env: dict[str, str], key: str, default: bool) -> bool:
+    value = env.get(key)
+    if value is None or value == "":
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"The {key} environment variable must be a boolean.")
 
 
 def _model_for_provider(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from enum import StrEnum
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Slot
 from PySide6.QtGui import (
@@ -14,7 +15,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
-from uttate.config import AppSettings, ProviderSettings
+from uttate.addons.dataset_curator import add_candidate
+from uttate.config import AppSettings, ProviderSettings, default_dataset_capture_path
 from uttate.keymap import GLOBAL_MODE, KeyConfig
 from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
@@ -230,6 +232,9 @@ class MainWindow(QMainWindow):
         if action == "accept_candidate":
             self._accept_selected_chunk()
             return True
+        if action == "accept_candidate_for_dataset":
+            self._accept_selected_chunk(record_dataset=True)
+            return True
         if action == "reject_chunk":
             self._reject_selected_chunk()
             return True
@@ -266,8 +271,9 @@ class MainWindow(QMainWindow):
             self._settings_window.raise_()
             self._settings_window.activateWindow()
             return
-        self._settings_window = SettingsWindow(self.key_config, self)
+        self._settings_window = SettingsWindow(self.key_config, self.settings, self)
         self._settings_window.key_config_saved.connect(self._apply_key_config)
+        self._settings_window.app_settings_saved.connect(self._apply_app_settings)
         self._settings_window.show()
 
     @Slot(object)
@@ -276,6 +282,11 @@ class MainWindow(QMainWindow):
         self.input_panel.editor.set_key_config(key_config)
         self._refresh_global_shortcuts()
         self.statusBar().showMessage("Key settings saved")
+
+    @Slot(object)
+    def _apply_app_settings(self, settings: AppSettings) -> None:
+        self.settings = settings
+        self.statusBar().showMessage("Settings saved")
 
     def _refresh_global_shortcuts(self) -> None:
         for shortcut in self._global_shortcuts:
@@ -351,10 +362,13 @@ class MainWindow(QMainWindow):
             return
         self._move_review_selection(1)
 
-    def _accept_selected_chunk(self) -> None:
+    def _accept_selected_chunk(self, *, record_dataset: bool = False) -> None:
         chunk = self._selected_chunk()
         if chunk is None or chunk.status not in {ChunkStatus.READY_FOR_REVIEW, ChunkStatus.EDITED}:
             self.statusBar().showMessage("Select a pending chunk to accept")
+            return
+        if record_dataset and not self.settings.dataset.capture_enabled:
+            self.statusBar().showMessage("Dataset capture is disabled")
             return
 
         text = self._selected_candidate_text(chunk)
@@ -367,7 +381,15 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(text)
         self.chunk_list.update_chunk(chunk)
         self.review_panel.show_chunk(chunk)
-        self.statusBar().showMessage("Accepted and copied to clipboard")
+        message = "Accepted and copied to clipboard"
+        if record_dataset:
+            try:
+                candidate = self._add_dataset_candidate(chunk, text)
+            except (OSError, ValueError) as error:
+                message = f"Accepted and copied; dataset capture failed: {error}"
+            else:
+                message = f"Accepted, copied, and recorded {candidate['id']}"
+        self.statusBar().showMessage(message)
         self._select_actionable_chunk(prefer_latest=True)
 
     def _reject_selected_chunk(self) -> None:
@@ -492,6 +514,30 @@ class MainWindow(QMainWindow):
         if self.chunk_list.candidate_index(chunk.id) == 1 and chunk.candidate_2:
             return chunk.candidate_2
         return chunk.candidate_1 or chunk.adopted_text or chunk.raw_text
+
+    def _add_dataset_candidate(self, chunk: Chunk, selected_text: str) -> dict[str, object]:
+        selected_index = self.chunk_list.candidate_index(chunk.id)
+        literal = selected_text if selected_index == 0 else chunk.candidate_1 or selected_text
+        natural = selected_text if selected_index == 1 else chunk.candidate_2 or selected_text
+        tags = ["review-accept"]
+        if chunk.provider:
+            tags.append(f"provider:{chunk.provider}")
+        if chunk.model:
+            tags.append(f"model:{chunk.model}")
+
+        return add_candidate(
+            self._dataset_capture_store_path(),
+            raw=chunk.raw_text,
+            kana=chunk.raw_text,
+            literal=literal,
+            natural=natural,
+            source="review_accept",
+            tags=tags,
+        )
+
+    def _dataset_capture_store_path(self) -> Path:
+        configured = self.settings.dataset.capture_store_path.strip()
+        return Path(configured) if configured else default_dataset_capture_path()
 
     def _editing_chunk(self) -> Chunk | None:
         if self._editing_chunk_id is None:

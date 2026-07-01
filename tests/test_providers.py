@@ -28,6 +28,12 @@ def test_mock_provider_returns_project_b_candidates() -> None:
     assert result.candidates[0].text == "AIで入力を再設計する。"
 
 
+def test_mock_provider_applies_protected_input_tags() -> None:
+    result = MockProvider(delay_seconds=0).convert("\\dedodamu\\ to =English= to $tokiori$")
+
+    assert result.candidates[0].text == "変換候補A: デドダム to English to ときおり"
+
+
 def test_factory_keeps_unimplemented_api_providers_explicit() -> None:
     with pytest.raises(ValueError, match="Unsupported provider"):
         create_conversion_provider(ProviderSettings(type="missing"))

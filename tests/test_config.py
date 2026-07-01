@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from uttate.config import AppSettings, ProviderSettings, load_settings, save_settings
+from uttate.config import (
+    AppSettings,
+    DatasetCaptureSettings,
+    ProviderSettings,
+    load_settings,
+    save_settings,
+)
 
 
 def test_missing_settings_uses_mock_defaults(tmp_path, monkeypatch) -> None:
@@ -13,6 +19,7 @@ def test_missing_settings_uses_mock_defaults(tmp_path, monkeypatch) -> None:
     assert settings.provider.type == "mock"
     assert settings.provider.model == ""
     assert settings.provider.gemini_model == "gemini-2.5-flash-lite"
+    assert settings.dataset.capture_enabled is False
 
 
 def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkeypatch) -> None:
@@ -63,7 +70,11 @@ def test_settings_round_trip(tmp_path) -> None:
             model="gpt-test",
             gemini_api_key="secret-gemini",
             openai_api_key="secret-openai",
-        )
+        ),
+        dataset=DatasetCaptureSettings(
+            capture_enabled=True,
+            capture_store_path=str(tmp_path / "candidates.jsonl"),
+        ),
     )
 
     written_path = save_settings(expected, settings_path)
@@ -72,7 +83,25 @@ def test_settings_round_trip(tmp_path) -> None:
     raw = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "gemini_api_key" not in raw["provider"]
     assert "openai_api_key" not in raw["provider"]
-    assert load_settings(settings_path, env_path=tmp_path / ".env").provider.type == "openai"
+    loaded = load_settings(settings_path, env_path=tmp_path / ".env")
+    assert loaded.provider.type == "openai"
+    assert loaded.dataset.capture_enabled is True
+    assert loaded.dataset.capture_store_path == str(tmp_path / "candidates.jsonl")
+
+
+def test_dataset_capture_env_overrides_settings(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("UTTATE_DATASET_CAPTURE_ENABLED", "true")
+    monkeypatch.setenv("UTTATE_DATASET_CAPTURE_STORE", str(tmp_path / "env.jsonl"))
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"dataset": {"capture_enabled": False, "capture_store_path": "file.jsonl"}}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path, env_path=tmp_path / ".env")
+
+    assert settings.dataset.capture_enabled is True
+    assert settings.dataset.capture_store_path == str(tmp_path / "env.jsonl")
 
 
 def test_non_object_settings_are_rejected(tmp_path) -> None:

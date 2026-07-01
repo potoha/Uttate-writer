@@ -394,6 +394,14 @@ DEFAULT_BINDINGS: list[KeyBinding] = [
     ),
     KeyBinding(
         "review",
+        "accept_candidate_for_dataset",
+        "Accept candidate for dataset",
+        ("Shift+Enter",),
+        "Adopt the currently previewed candidate, copy it, and add it to dataset candidates.",
+        "This only records data when dataset capture is enabled in Settings.",
+    ),
+    KeyBinding(
+        "review",
         "reject_chunk",
         "Reject chunk",
         ("Backspace", "Delete"),

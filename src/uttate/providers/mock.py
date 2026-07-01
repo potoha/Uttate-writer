@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from uttate.protected_input import parse_protected_input
 from uttate.providers.base import Candidate, ProviderResult
 
 _KNOWN_CONVERSIONS: dict[str, tuple[str, str]] = {
@@ -51,9 +52,10 @@ class MockProvider:
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
 
-        normalized_raw = " ".join(raw_text.split())
+        protected_input = parse_protected_input(raw_text)
+        normalized_raw = " ".join(protected_input.text.split())
         candidate_1, candidate_2 = _KNOWN_CONVERSIONS.get(
-            raw_text,
+            protected_input.text,
             (
                 f"変換候補A: {normalized_raw}",
                 f"変換候補B: {normalized_raw}",

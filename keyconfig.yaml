@@ -78,6 +78,13 @@ modes:
       role: "現在表示中の候補を採用し、クリップボードへコピーする。"
       note: "候補を眺めて Enter で決める、Uttate の基本操作。"
 
+    accept_candidate_for_dataset:
+      label: "Accept candidate for dataset"
+      keys:
+        - "Shift+Enter"
+      role: "現在表示中の候補を採用し、クリップボードへコピーし、学習データ候補へ追加する。"
+      note: "Settings で Dataset capture がオンのときだけ記録する。"
+
     cycle_candidate:
       label: "Cycle candidate"
       keys:

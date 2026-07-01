@@ -6,7 +6,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
-from uttate.config import AppSettings, ProviderSettings
+from uttate.addons.dataset_curator import load_candidates
+from uttate.config import AppSettings, DatasetCaptureSettings, ProviderSettings
 from uttate.models import ChunkStatus
 from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.mock import MockProvider
@@ -201,6 +202,65 @@ def test_review_mode_enter_accepts_and_copies_selected_candidate(qtbot) -> None:
     assert chunk.adopted_text == "変換候補A: copy me"
     assert QApplication.clipboard().text() == "変換候補A: copy me"
     assert "[accepted]" in window.chunk_list.item(0).text()
+
+
+def test_review_mode_shift_enter_accepts_and_records_dataset_candidate(qtbot, tmp_path) -> None:
+    store = tmp_path / "review_candidates.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(capture_enabled=True, capture_store_path=str(store))
+    )
+    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "dataset me")
+    wait_until_idle(qtbot, window)
+
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(
+        window.chunk_list,
+        Qt.Key.Key_Return,
+        modifier=Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    chunk = window.document.chunks[0]
+    candidates = load_candidates(store)
+    assert chunk.status == ChunkStatus.ADOPTED
+    assert chunk.adopted_text == "変換候補A: dataset me"
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "candidate"
+    assert candidates[0]["raw"] == "dataset me"
+    assert candidates[0]["kana"] == "dataset me"
+    assert candidates[0]["literal"] == "変換候補A: dataset me"
+    assert candidates[0]["natural"] == "変換候補B: dataset me"
+    assert "review-accept" in candidates[0]["tags"]
+
+
+def test_review_mode_shift_enter_does_not_accept_when_capture_is_off(
+    qtbot,
+    tmp_path,
+) -> None:
+    store = tmp_path / "disabled.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(capture_enabled=False, capture_store_path=str(store))
+    )
+    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "do not record")
+    wait_until_idle(qtbot, window)
+
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(
+        window.chunk_list,
+        Qt.Key.Key_Return,
+        modifier=Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    assert window.document.chunks[0].status == ChunkStatus.READY_FOR_REVIEW
+    assert not store.exists()
+    assert window.statusBar().currentMessage() == "Dataset capture is disabled"
 
 
 def test_review_mode_space_can_select_second_candidate_before_accept(qtbot) -> None:

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -17,6 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from uttate.config import (
+    AppSettings,
+    DatasetCaptureSettings,
+    default_dataset_capture_path,
+    save_settings,
+)
 from uttate.keymap import DEFAULT_BINDINGS, KeyConfig, key_sequence_from_event
 
 MODE_LABELS = {
@@ -54,14 +65,25 @@ class KeyCaptureDialog(QDialog):
 
 class SettingsWindow(QDialog):
     key_config_saved = Signal(KeyConfig)
+    app_settings_saved = Signal(AppSettings)
 
-    def __init__(self, key_config: KeyConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        key_config: KeyConfig,
+        settings: AppSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Uttate Settings")
-        self.resize(780, 460)
+        self.resize(780, 560)
         self.key_config = key_config
+        self.app_settings = settings or AppSettings()
 
         self.mode_buttons: dict[str, QPushButton] = {}
+        self.dataset_capture_checkbox = QCheckBox("Record review accepts as dataset candidates")
+        self.dataset_capture_checkbox.setChecked(self.app_settings.dataset.capture_enabled)
+        self.dataset_store_path = QLineEdit(self._dataset_store_text())
+        self.dataset_store_path.setPlaceholderText(str(default_dataset_capture_path()))
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Action", "Key", "Role", "Note"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -86,6 +108,7 @@ class SettingsWindow(QDialog):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_dataset_group())
 
         mode_bar = QHBoxLayout()
         for mode, label in MODE_LABELS.items():
@@ -106,6 +129,16 @@ class SettingsWindow(QDialog):
         action_bar.addStretch(1)
         action_bar.addWidget(self.save_button)
         layout.addLayout(action_bar)
+
+    def _build_dataset_group(self) -> QGroupBox:
+        group = QGroupBox("Dataset capture")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.dataset_capture_checkbox)
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("Candidate store"))
+        path_row.addWidget(self.dataset_store_path, 1)
+        layout.addLayout(path_row)
+        return group
 
     def _connect_signals(self) -> None:
         for mode, button in self.mode_buttons.items():
@@ -194,6 +227,22 @@ class SettingsWindow(QDialog):
             )
             if response != QMessageBox.StandardButton.Save:
                 return
+        self.app_settings = replace(
+            self.app_settings,
+            dataset=DatasetCaptureSettings(
+                capture_enabled=self.dataset_capture_checkbox.isChecked(),
+                capture_store_path=self.dataset_store_path.text().strip(),
+            ),
+        )
+        try:
+            save_settings(self.app_settings)
+        except OSError as error:
+            QMessageBox.critical(self, "Settings save failed", str(error))
+            return
         self.key_config.save()
         self.key_config_saved.emit(self.key_config)
+        self.app_settings_saved.emit(self.app_settings)
         self.accept()
+
+    def _dataset_store_text(self) -> str:
+        return self.app_settings.dataset.capture_store_path or str(default_dataset_capture_path())

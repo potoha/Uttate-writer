@@ -15,6 +15,7 @@ class ChunkListWidget(QListWidget):
         self.setAlternatingRowColors(True)
         self.setMinimumWidth(250)
         self.setWordWrap(True)
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setSpacing(4)
 
     def add_chunk(self, chunk: Chunk) -> None:
@@ -30,8 +31,6 @@ class ChunkListWidget(QListWidget):
             return
         index = self.row(item) + 1
         summary = _card_text(chunk, self.candidate_index(chunk.id))
-        if len(summary) > 44:
-            summary = f"{summary[:43]}…"
         status = display_status(chunk.status)
         item.setText(f"{index:02d}  [{status}]\n{summary}")
         item.setToolTip(_tooltip_text(chunk))

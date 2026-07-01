@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from uttate.config import ProviderSettings
 
@@ -22,6 +22,7 @@ class ProviderPanel(QWidget):
     """
 
     provider_change_requested = Signal(str)
+    settings_requested = Signal()
 
     def __init__(self, settings: ProviderSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,6 +34,9 @@ class ProviderPanel(QWidget):
         self.model_label.setObjectName("providerModelLabel")
         self.error_label = QLabel()
         self.error_label.setObjectName("providerErrorLabel")
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setToolTip("Open key settings")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -40,8 +44,10 @@ class ProviderPanel(QWidget):
         layout.addWidget(self.provider_combo)
         layout.addWidget(self.model_label, 1)
         layout.addWidget(self.error_label, 2)
+        layout.addWidget(self.settings_button)
 
         self.provider_combo.currentIndexChanged.connect(self._emit_current_provider)
+        self.settings_button.clicked.connect(self.settings_requested.emit)
         self.set_settings(settings)
 
     def set_settings(self, settings: ProviderSettings, *, error: str = "") -> None:

@@ -20,7 +20,6 @@ uttate-curate = "uttate.addons.dataset_curator:main"
 
 [dependency-groups]
 dev = [
-    "pyinstaller>=6.21.0",
     "pytest>=8.3,<10",
     "pytest-qt>=4.4,<5",
     "ruff>=0.11",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 
 from uttate.models import Chunk
@@ -75,5 +76,7 @@ class ReviewPanel(QWidget):
         field = QPlainTextEdit()
         field.setObjectName(f"review{name.replace(' ', '')}")
         field.setReadOnly(True)
-        field.setMaximumHeight(82)
+        field.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        field.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        field.setMinimumHeight(82)
         return field

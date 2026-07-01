@@ -1,0 +1,166 @@
+# Uttate Writer key configuration
+#
+# このファイルは設定ファイルであり、同時にキーボード操作のチートシートです。
+# コンビネーションキーは Settings 画面で変更するのが安全です。
+#
+# 書式:
+#   - Ctrl+Enter
+#   - Shift+Space
+#   - Alt+1
+#   - F12
+#   - Escape
+#
+# mode:
+#   global         どのモードでも使うキー
+#   input          ラフ入力を書くモード
+#   review         変換候補を確認するモード
+#   candidate_edit 候補文を直接編集するモード
+#
+version: 1
+modes:
+
+  global:
+    open_settings:
+      label: "Open settings"
+      keys:
+        - "F12"
+      role: "設定画面を別ウィンドウで開く。"
+      note: "画面右上の Settings ボタンと同じ動作。キー設定を変更したいときの入口。"
+
+    toggle_input_review:
+      label: "Toggle input/review"
+      keys:
+        - "F2"
+      role: "Input mode と Review mode を切り替える。"
+      note: "Candidate edit 中は編集をキャンセルして Review mode に戻る。"
+
+  input:
+    clear_or_hide:
+      label: "Clear or hide"
+      keys:
+        - "Escape"
+      role: "入力欄に文字があれば消す。空なら一時UIを閉じる。"
+      note: "入力をすばやく破棄するための逃げ道。"
+
+    commit_chunk:
+      label: "Commit chunk"
+      keys:
+        - "Enter"
+      role: "現在のラフ入力を1チャンクとして確定し、変換キューへ送る。"
+      note: "入力欄はすぐ空になるので、変換完了を待たずに次を書き続けられる。"
+
+    insert_chunk_separator:
+      label: "Insert chunk separator"
+      keys:
+        - "Space"
+      role: "IME変換ではなく、Uttate用の区切り ` | ` を入れる。"
+      note: "Space は漢字変換ではなく、ラフ入力の分節補助として使う。"
+
+    insert_newline:
+      label: "Insert newline"
+      keys:
+        - "Shift+Enter"
+      role: "チャンクを送信せず、入力欄に通常の改行を入れる。"
+      note: "ひとまとまりの思考を複数行で書きたいときに使う。"
+
+    insert_space:
+      label: "Insert real space"
+      keys:
+        - "Shift+Space"
+      role: "普通の半角スペースを入れる。"
+      note: "英語や記号列をそのまま書きたいときに使う。"
+
+  review:
+    accept_candidate:
+      label: "Accept candidate"
+      keys:
+        - "Enter"
+      role: "現在表示中の候補を採用し、クリップボードへコピーする。"
+      note: "候補を眺めて Enter で決める、Uttate の基本操作。"
+
+    cycle_candidate:
+      label: "Cycle candidate"
+      keys:
+        - "Space"
+      role: "候補Aと候補Bを切り替える。候補が不足している場合は次のチャンクへ移動する。"
+      note: "将来 Tab に変えたい場合は、Settings 画面でこのアクションを Tab に変更する。"
+
+    edit_as_input:
+      label: "Edit as input"
+      keys:
+        - "E"
+      role: "現在の候補テキストを Input mode に戻して編集する。"
+      note: "候補を材料にして、通常入力として書き直したいときに使う。"
+
+    edit_candidate:
+      label: "Edit candidate"
+      keys:
+        - "F"
+      role: "現在の候補を Candidate edit mode で直接編集する。"
+      note: "採用直前の候補だけを素早く直すための編集モードへ入る。"
+
+    move_next_chunk:
+      label: "Next chunk"
+      keys:
+        - "Down"
+      role: "次のレビュー対象チャンクへ移動する。"
+      note: "ready / edited / failed など、操作可能なチャンクだけを巡回する。"
+
+    move_previous_chunk:
+      label: "Previous chunk"
+      keys:
+        - "Up"
+      role: "前のレビュー対象チャンクへ移動する。"
+      note: "最後や先頭に到達した場合は巡回する。"
+
+    reconvert_chunk:
+      label: "Reconvert chunk"
+      keys:
+        - "R"
+      role: "選択中のチャンクを再変換キューへ送る。"
+      note: "失敗・不自然・候補不足のときに使う。"
+
+    reject_chunk:
+      label: "Reject chunk"
+      keys:
+        - "Backspace"
+        - "Delete"
+      role: "選択中のチャンクを却下する。"
+      note: "誤入力や不要な変換結果をレビュー対象から外す。"
+
+    return_to_input:
+      label: "Return to input"
+      keys:
+        - "Escape"
+      role: "Input mode に戻る。"
+      note: "レビューを中断して執筆に戻る。"
+
+  candidate_edit:
+    accept_edit:
+      label: "Accept edit"
+      keys:
+        - "Enter"
+      role: "編集後の候補を採用し、クリップボードへコピーする。"
+      note: "候補を少しだけ直して、そのまま確定したいときの最短操作。"
+
+    cancel_edit:
+      label: "Cancel edit"
+      keys:
+        - "Escape"
+        - "F2"
+      role: "候補編集をキャンセルし、Review mode に戻る。"
+      note: "編集前の入力欄内容を復元する。"
+
+    insert_space:
+      label: "Insert space"
+      keys:
+        - "Space"
+      role: "通常の半角スペースを入れる。"
+      note: "Candidate edit 中の Space は候補切替ではなく、文字入力として扱う。"
+
+    reconvert_edited_text:
+      label: "Reconvert edited text"
+      keys:
+        - "Ctrl+Enter"
+      role: "編集後テキストを raw_text として再変換する。"
+      note: "候補を直接採用せず、修正内容をもとにAIへ再変換させる。"

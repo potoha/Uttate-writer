@@ -4,10 +4,18 @@ from dataclasses import replace
 from enum import StrEnum
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Slot
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeyEvent, QTextCursor
+from PySide6.QtGui import (
+    QCloseEvent,
+    QGuiApplication,
+    QKeyEvent,
+    QKeySequence,
+    QShortcut,
+    QTextCursor,
+)
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
 from uttate.config import AppSettings, ProviderSettings
+from uttate.keymap import GLOBAL_MODE, KeyConfig
 from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
 from uttate.providers.base import ConversionProvider, ProviderError
@@ -17,6 +25,7 @@ from uttate.ui.chunk_list import ChunkListWidget
 from uttate.ui.input_panel import InputPanel
 from uttate.ui.provider_panel import ProviderPanel
 from uttate.ui.review_panel import ReviewPanel
+from uttate.ui.settings_window import SettingsWindow
 
 
 class ConsoleMode(StrEnum):
@@ -37,11 +46,14 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("Uttate Writer")
-        self.setMinimumSize(640, 180)
-        self._configure_overlay_window()
+        self.setMinimumSize(640, 220)
+        self._configure_main_window_geometry()
 
         self.document = Document()
         self.settings = settings or AppSettings()
+        self.key_config = KeyConfig.load()
+        self._settings_window: SettingsWindow | None = None
+        self._global_shortcuts: list[QShortcut] = []
         initial_provider = provider or _provider_from_settings(self.settings.provider)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(max_workers)
@@ -53,10 +65,11 @@ class MainWindow(QMainWindow):
 
         self.chunk_list = ChunkListWidget()
         self.provider_panel = ProviderPanel(self.settings.provider)
-        self.input_panel = InputPanel()
+        self.input_panel = InputPanel(self.key_config)
         self.review_panel = ReviewPanel()
         self._build_layout()
         self._connect_signals()
+        self._refresh_global_shortcuts()
         self._apply_style()
         self.statusBar().showMessage("Ready")
         self.input_panel.editor.setFocus()
@@ -80,20 +93,20 @@ class MainWindow(QMainWindow):
         if not isinstance(key_event, QKeyEvent):
             return super().eventFilter(watched, event)
 
-        if self.mode == ConsoleMode.CANDIDATE_EDIT:
-            if self._handle_candidate_edit_key(key_event):
-                key_event.accept()
-                return True
-            if key_event.key() == Qt.Key.Key_F2:
-                self._cancel_candidate_edit()
-                key_event.accept()
-                return True
-        if self.mode == ConsoleMode.REVIEW and self._handle_review_key(key_event):
+        global_action = self.key_config.action_for(GLOBAL_MODE, key_event)
+        if global_action == "open_settings":
+            self._open_settings_window()
+            key_event.accept()
+            return True
+        if global_action == "toggle_input_review":
+            self._toggle_mode()
             key_event.accept()
             return True
 
-        if key_event.key() == Qt.Key.Key_F2:
-            self._toggle_mode()
+        if self.mode == ConsoleMode.CANDIDATE_EDIT and self._handle_candidate_edit_key(key_event):
+            key_event.accept()
+            return True
+        if self.mode == ConsoleMode.REVIEW and self._handle_review_key(key_event):
             key_event.accept()
             return True
 
@@ -120,6 +133,7 @@ class MainWindow(QMainWindow):
         self.input_panel.editor.escape_on_empty_requested.connect(self.hide)
         self.input_panel.editor.mode_toggle_requested.connect(self._toggle_mode)
         self.provider_panel.provider_change_requested.connect(self._change_provider)
+        self.provider_panel.settings_requested.connect(self._open_settings_window)
         self.chunk_list.currentItemChanged.connect(self._show_selected_chunk)
         self.conversion_queue.chunk_updated.connect(self._refresh_chunk)
         self.conversion_queue.processing_count_changed.connect(self._show_processing_count)
@@ -165,8 +179,7 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Ready - {len(self.document.chunks)} chunk(s)")
 
-    def _configure_overlay_window(self) -> None:
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    def _configure_main_window_geometry(self) -> None:
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             self.resize(1100, 280)
@@ -201,51 +214,82 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Input mode")
 
     def _handle_review_key(self, event: QKeyEvent) -> bool:
-        key = event.key()
-        if key == Qt.Key.Key_Escape:
+        action = self.key_config.action_for("review", event)
+        if action == "return_to_input":
             self._set_mode(ConsoleMode.INPUT)
             return True
-        if key == Qt.Key.Key_Up:
+        if action == "move_previous_chunk":
             self._move_review_selection(-1)
             return True
-        if key == Qt.Key.Key_Down:
+        if action == "move_next_chunk":
             self._move_review_selection(1)
             return True
-        if key == Qt.Key.Key_Space:
+        if action == "cycle_candidate":
             self._cycle_candidate_or_move_next()
             return True
-        if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+        if action == "accept_candidate":
             self._accept_selected_chunk()
             return True
-        if key in {Qt.Key.Key_Backspace, Qt.Key.Key_Delete}:
+        if action == "reject_chunk":
             self._reject_selected_chunk()
             return True
-        if key == Qt.Key.Key_E:
+        if action == "edit_as_input":
             self._edit_selected_chunk()
             return True
-        if key == Qt.Key.Key_F:
+        if action == "edit_candidate":
             self._begin_candidate_edit()
             return True
-        if key == Qt.Key.Key_R:
+        if action == "reconvert_chunk":
             self._resend_selected_chunk()
             return True
         return False
 
     def _handle_candidate_edit_key(self, event: QKeyEvent) -> bool:
-        key = event.key()
-        if key == Qt.Key.Key_Escape:
+        action = self.key_config.action_for("candidate_edit", event)
+        if action == "cancel_edit":
             self._cancel_candidate_edit()
             return True
-        if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                self._reconvert_candidate_edit()
-            else:
-                self._accept_candidate_edit()
+        if action == "reconvert_edited_text":
+            self._reconvert_candidate_edit()
             return True
-        if key == Qt.Key.Key_Space:
+        if action == "accept_edit":
+            self._accept_candidate_edit()
+            return True
+        if action == "insert_space":
             self.input_panel.editor.insertPlainText(" ")
             return True
         return False
+
+    @Slot()
+    def _open_settings_window(self) -> None:
+        if self._settings_window is not None and self._settings_window.isVisible():
+            self._settings_window.raise_()
+            self._settings_window.activateWindow()
+            return
+        self._settings_window = SettingsWindow(self.key_config, self)
+        self._settings_window.key_config_saved.connect(self._apply_key_config)
+        self._settings_window.show()
+
+    @Slot(object)
+    def _apply_key_config(self, key_config: KeyConfig) -> None:
+        self.key_config = key_config
+        self.input_panel.editor.set_key_config(key_config)
+        self._refresh_global_shortcuts()
+        self.statusBar().showMessage("Key settings saved")
+
+    def _refresh_global_shortcuts(self) -> None:
+        for shortcut in self._global_shortcuts:
+            shortcut.setParent(None)
+            shortcut.deleteLater()
+        self._global_shortcuts = []
+
+        for key in self.key_config.keys_for(GLOBAL_MODE, "open_settings"):
+            sequence = QKeySequence(key)
+            if sequence.isEmpty():
+                continue
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(self._open_settings_window)
+            self._global_shortcuts.append(shortcut)
 
     def _selected_chunk(self) -> Chunk | None:
         chunk_id = self.chunk_list.selected_chunk_id()

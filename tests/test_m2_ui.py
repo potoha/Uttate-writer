@@ -4,7 +4,7 @@ import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
 from uttate.config import AppSettings, ProviderSettings
 from uttate.models import ChunkStatus
@@ -145,6 +145,42 @@ def test_selected_chunk_review_refreshes_after_conversion(qtbot) -> None:
     assert window.review_panel.status_label.text() == "Status: ready_for_review / mock:mock"
     assert window.review_panel.raw_field.toPlainText() == "review me"
     assert window.review_panel.candidate_1_field.toPlainText() == "変換候補A: review me"
+
+
+def test_main_window_starts_as_normal_bottom_band(qtbot) -> None:
+    window = MainWindow(MockProvider(delay_seconds=0))
+    qtbot.addWidget(window)
+
+    assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    expected_height = max(220, int(available.height() * 0.25))
+
+    geometry = window.geometry()
+    assert geometry.x() == available.x()
+    assert geometry.y() == available.bottom() - expected_height + 1
+    assert geometry.width() == available.width()
+    assert geometry.height() == expected_height
+
+
+def test_long_chunk_text_is_not_elided_and_review_fields_wrap(qtbot) -> None:
+    window = MainWindow(MockProvider(delay_seconds=0))
+    qtbot.addWidget(window)
+    long_text = "nagai" * 24
+
+    submit(qtbot, window, long_text)
+    wait_until_idle(qtbot, window)
+
+    item_text = window.chunk_list.item(0).text()
+    assert "..." not in item_text
+    assert "…" not in item_text
+    assert f"変換候補A: {long_text}" in item_text
+    assert window.review_panel.raw_field.toPlainText() == long_text
+    assert window.review_panel.candidate_1_field.toPlainText() == f"変換候補A: {long_text}"
+    assert window.review_panel.raw_field.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+    assert window.review_panel.raw_field.maximumHeight() > 10000
 
 
 def test_review_mode_enter_accepts_and_copies_selected_candidate(qtbot) -> None:
@@ -305,3 +341,26 @@ def test_provider_switch_updates_future_chunks(qtbot) -> None:
 
     assert window.provider_panel.provider_combo.currentData() == "lmstudio"
     assert "auto-detect" in window.provider_panel.model_label.text()
+
+
+def test_settings_button_opens_key_settings_window(qtbot) -> None:
+    window = MainWindow(MockProvider(delay_seconds=0))
+    qtbot.addWidget(window)
+    window.show()
+
+    qtbot.mouseClick(window.provider_panel.settings_button, Qt.MouseButton.LeftButton)
+
+    assert window._settings_window is not None
+    assert window._settings_window.isVisible()
+
+
+def test_f12_opens_key_settings_window(qtbot) -> None:
+    window = MainWindow(MockProvider(delay_seconds=0))
+    qtbot.addWidget(window)
+    window.show()
+    window.input_panel.editor.setFocus()
+
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F12)
+
+    assert window._settings_window is not None
+    assert window._settings_window.isVisible()

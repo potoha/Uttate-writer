@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
+
+from uttate.keymap import KeyConfig
 
 
 class RoughInputEdit(QPlainTextEdit):
@@ -12,13 +14,16 @@ class RoughInputEdit(QPlainTextEdit):
     escape_on_empty_requested = Signal()
     mode_toggle_requested = Signal()
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt API name
-        if event.key() == Qt.Key.Key_F2:
-            self.mode_toggle_requested.emit()
-            event.accept()
-            return
+    def __init__(self, key_config: KeyConfig | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.key_config = key_config or KeyConfig()
 
-        if event.key() == Qt.Key.Key_Escape:
+    def set_key_config(self, key_config: KeyConfig) -> None:
+        self.key_config = key_config
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt API name
+        action = self.key_config.action_for("input", event)
+        if action == "clear_or_hide":
             if self.toPlainText():
                 self.clear()
             else:
@@ -26,11 +31,11 @@ class RoughInputEdit(QPlainTextEdit):
             event.accept()
             return
 
-        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                super().keyPressEvent(event)
-                return
+        if action == "insert_newline":
+            super().keyPressEvent(event)
+            return
 
+        if action == "commit_chunk":
             raw_text = self.toPlainText()
             if raw_text.strip():
                 self.clear()
@@ -38,11 +43,13 @@ class RoughInputEdit(QPlainTextEdit):
             event.accept()
             return
 
-        if event.key() == Qt.Key.Key_Space:
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                self.insertPlainText(" ")
-            else:
-                self.insertPlainText(" | ")
+        if action == "insert_space":
+            self.insertPlainText(" ")
+            event.accept()
+            return
+
+        if action == "insert_chunk_separator":
+            self.insertPlainText(" | ")
             event.accept()
             return
 
@@ -50,9 +57,9 @@ class RoughInputEdit(QPlainTextEdit):
 
 
 class InputPanel(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, key_config: KeyConfig | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.editor = RoughInputEdit()
+        self.editor = RoughInputEdit(key_config)
         self.editor.setObjectName("roughInputEditor")
         self.editor.setPlaceholderText(
             "ローマ字・English・記号列を入力…  Spaceで区切り / Shift+Spaceで空白"

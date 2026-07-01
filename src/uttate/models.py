@@ -18,6 +18,7 @@ class ChunkStatus(StrEnum):
     READY_FOR_REVIEW = "ready_for_review"
     ADOPTED = "adopted"
     EDITED = "edited"
+    REJECTED = "rejected"
     FAILED = "failed"
 
 
@@ -54,11 +55,19 @@ class Chunk:
         ChunkStatus.QUEUED: frozenset({ChunkStatus.CONVERTING, ChunkStatus.FAILED}),
         ChunkStatus.CONVERTING: frozenset({ChunkStatus.READY_FOR_REVIEW, ChunkStatus.FAILED}),
         ChunkStatus.READY_FOR_REVIEW: frozenset(
-            {ChunkStatus.ADOPTED, ChunkStatus.EDITED, ChunkStatus.QUEUED}
+            {
+                ChunkStatus.ADOPTED,
+                ChunkStatus.EDITED,
+                ChunkStatus.REJECTED,
+                ChunkStatus.QUEUED,
+            }
         ),
         ChunkStatus.ADOPTED: frozenset({ChunkStatus.EDITED, ChunkStatus.QUEUED}),
-        ChunkStatus.EDITED: frozenset({ChunkStatus.ADOPTED, ChunkStatus.QUEUED}),
-        ChunkStatus.FAILED: frozenset({ChunkStatus.QUEUED}),
+        ChunkStatus.EDITED: frozenset(
+            {ChunkStatus.ADOPTED, ChunkStatus.REJECTED, ChunkStatus.QUEUED}
+        ),
+        ChunkStatus.REJECTED: frozenset({ChunkStatus.QUEUED}),
+        ChunkStatus.FAILED: frozenset({ChunkStatus.REJECTED, ChunkStatus.QUEUED}),
     }
 
     def __post_init__(self) -> None:
@@ -121,6 +130,19 @@ class Chunk:
         else:
             self.updated_at = self._validated_update_time(at)
         self.adopted_text = text
+
+    def reject(self, *, at: float | None = None) -> None:
+        """Keep the chunk in history while marking it unusable for approval."""
+
+        if self.status not in {
+            ChunkStatus.READY_FOR_REVIEW,
+            ChunkStatus.EDITED,
+            ChunkStatus.FAILED,
+        }:
+            raise InvalidStatusTransition(
+                f"Cannot reject chunk {self.id} while it is {self.status}."
+            )
+        self.transition_to(ChunkStatus.REJECTED, at=at)
 
     def export_text(self, fallback: ExportFallback = ExportFallback.CANDIDATE_1) -> str:
         """Return the chunk text using the configured unresolved fallback."""

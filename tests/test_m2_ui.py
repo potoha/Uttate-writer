@@ -391,15 +391,17 @@ def test_review_mode_r_resends_error_chunk(qtbot) -> None:
 
 
 def test_provider_switch_updates_future_chunks(qtbot) -> None:
-    settings = AppSettings(provider=ProviderSettings(type="mock"))
+    settings = AppSettings(
+        provider=ProviderSettings(type="openai", openai_api_key="dummy-openai")
+    )
     window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
 
     window.provider_panel.provider_combo.setCurrentIndex(
-        window.provider_panel.provider_combo.findData("lmstudio")
+        window.provider_panel.provider_combo.findData("local_ai")
     )
 
-    assert window.provider_panel.provider_combo.currentData() == "lmstudio"
+    assert window.provider_panel.provider_combo.currentData() == "local_ai"
     assert "auto-detect" in window.provider_panel.model_label.text()
 
 
@@ -424,3 +426,6 @@ def test_f12_opens_key_settings_window(qtbot) -> None:
 
     assert window._settings_window is not None
     assert window._settings_window.isVisible()
+
+
+

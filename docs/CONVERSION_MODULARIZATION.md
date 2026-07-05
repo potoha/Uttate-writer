@@ -10,6 +10,7 @@
 - `uttate.conversion.direct`: not-local direct prompt / schema builder。
 - `uttate.conversion.response_parser`: provider JSON parser と result validation。
 - `uttate.conversion.core`: provider-neutral な request / core adapter 境界。
+- `uttate.conversion.local_ai`: main由来のStage 1読み転写 prompt / schema / fidelity validation。
 
 ## 互換モジュール
 
@@ -23,12 +24,14 @@
 
 ## main 由来 local conversion の入口
 
-main branch の変換 logic は `uttate.conversion.core` の内側に導入する:
+main branch のStage 1読み転写 logic は `uttate.conversion.local_ai` として導入した。
 
-1. `ConversionRequest` を受け取る。
-2. 既存 contract の `ProviderResult` を返す。
-3. 入力 marker は `uttate.input_rules` で扱う。
+1. `ReadingNormalizer` が main 由来の prompt / schema / fidelity validation を保持する。
+2. `ReadingNormalizationProvider` が `ProviderResult` contract へ adapter する。
+3. `uttate.providers.local_ai.LocalAIProvider` が LM Studio/OpenAI互換APIへJSON schema requestを送る。
 4. Gemini / OpenAI prompt は not-local direct flow + marker protection を維持する。
 
-LM Studio / OpenAI-compatible transport は、この段階では意図的に変更しない。message payload
-の仕様は local API policy が確定するまで pending とする。
+`local_ai` は自然文候補A/Bではなく、Stage 1の忠実な読み転写を `faithful_reading` 候補として返す。
+`lmstudio` は設定互換用の旧名として `local_ai` へ寄せる。ユーザー向けの選択肢には出さない。`openai_compatible` は汎用互換API用の内部Providerとして維持する。
+
+

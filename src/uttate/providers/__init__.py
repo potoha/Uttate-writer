@@ -8,7 +8,7 @@ from uttate.providers.base import (
     ProviderUsage,
 )
 from uttate.providers.gemini import GeminiProvider
-from uttate.providers.mock import MockProvider
+from uttate.providers.local_ai import LocalAIProvider
 from uttate.providers.openai import OpenAIProvider
 from uttate.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -16,10 +16,12 @@ __all__ = [
     "Candidate",
     "ConversionProvider",
     "GeminiProvider",
-    "MockProvider",
+    "LocalAIProvider",
     "OpenAICompatibleProvider",
     "OpenAIProvider",
     "ProviderError",
     "ProviderResult",
     "ProviderUsage",
 ]
+
+

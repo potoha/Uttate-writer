@@ -11,12 +11,12 @@ from uttate.config import (
 )
 
 
-def test_missing_settings_uses_mock_defaults(tmp_path, monkeypatch) -> None:
+def test_missing_settings_uses_local_ai_defaults(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
     settings = load_settings(tmp_path / "missing.json", env_path=tmp_path / ".env")
 
     assert settings == AppSettings()
-    assert settings.provider.type == "mock"
+    assert settings.provider.type == "local_ai"
     assert settings.provider.model == ""
     assert settings.provider.gemini_model == "gemini-2.5-flash-lite"
     assert settings.dataset.capture_enabled is False
@@ -25,7 +25,7 @@ def test_missing_settings_uses_mock_defaults(tmp_path, monkeypatch) -> None:
 def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
     settings_path = tmp_path / "settings.json"
-    settings_path.write_text(json.dumps({"provider": {"type": "mock"}}), encoding="utf-8")
+    settings_path.write_text(json.dumps({"provider": {"type": "local_ai"}}), encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text(
         "UTTATE_PROVIDER=gemini\nGEMINI_API_KEY=dummy-1234567890\n",
@@ -39,7 +39,30 @@ def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkey
     assert settings.provider.gemini_api_key == "dummy-1234567890"
 
 
-def test_env_file_loads_lmstudio_compatible_settings(tmp_path, monkeypatch) -> None:
+def test_env_file_loads_local_ai_lmstudio_settings(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "UTTATE_PROVIDER=local_ai",
+                "LMSTUDIO_BASE_URL=http://localhost:1234/v1",
+                "LMSTUDIO_API_KEY=local-key",
+                "LMSTUDIO_MODEL=loaded-model",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(tmp_path / "missing.json", env_path=env_path)
+
+    assert settings.provider.type == "local_ai"
+    assert settings.provider.compatible_base_url == "http://localhost:1234/v1"
+    assert settings.provider.compatible_api_key == "local-key"
+    assert settings.provider.compatible_model == "loaded-model"
+
+
+def test_env_file_maps_legacy_lmstudio_to_local_ai_settings(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -56,7 +79,7 @@ def test_env_file_loads_lmstudio_compatible_settings(tmp_path, monkeypatch) -> N
 
     settings = load_settings(tmp_path / "missing.json", env_path=env_path)
 
-    assert settings.provider.type == "lmstudio"
+    assert settings.provider.type == "local_ai"
     assert settings.provider.compatible_base_url == "http://localhost:1234/v1"
     assert settings.provider.compatible_api_key == "local-key"
     assert settings.provider.compatible_model == "loaded-model"
@@ -121,3 +144,6 @@ def test_non_positive_provider_timeout_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="positive number"):
         load_settings(settings_path, env_path=tmp_path / ".env")
+
+
+

@@ -5,6 +5,7 @@ from uttate.config import ProviderSettings
 from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.factory import create_conversion_provider
 from uttate.providers.gemini import GeminiProvider
+from uttate.providers.local_ai import LocalAIProvider
 from uttate.providers.mock import MockProvider
 from uttate.providers.openai import OpenAIProvider
 from uttate.providers.openai_compatible import OpenAICompatibleProvider
@@ -55,8 +56,14 @@ def test_factory_creates_openai_provider() -> None:
     assert isinstance(provider, OpenAIProvider)
 
 
-def test_factory_creates_lmstudio_compatible_provider() -> None:
-    provider = create_conversion_provider(ProviderSettings(type="lmstudio"))
+def test_factory_creates_local_ai_provider() -> None:
+    provider = create_conversion_provider(ProviderSettings(type="local_ai"))
+
+    assert isinstance(provider, LocalAIProvider)
+
+
+def test_factory_creates_openai_compatible_provider() -> None:
+    provider = create_conversion_provider(ProviderSettings(type="openai_compatible"))
 
     assert isinstance(provider, OpenAICompatibleProvider)
 
@@ -185,13 +192,13 @@ def test_openai_compatible_provider_posts_chat_completion() -> None:
         base_url="http://local.test/v1",
         api_key="compat-key",
         model="local-model",
-        provider_name="lmstudio",
+        provider_name="openai_compatible",
         transport=httpx.MockTransport(handler),
     )
 
     result = provider.convert("rough")
 
-    assert result.provider == "lmstudio"
+    assert result.provider == "openai_compatible"
     assert result.model == "local-model"
     assert result.candidates[0].text == "本文"
 
@@ -221,10 +228,13 @@ def test_openai_compatible_provider_auto_detects_model() -> None:
         base_url="http://local.test/v1",
         api_key="",
         model="",
-        provider_name="lmstudio",
+        provider_name="openai_compatible",
         transport=httpx.MockTransport(handler),
     )
 
     result = provider.convert("rough")
 
     assert result.model == "loaded-model"
+
+
+

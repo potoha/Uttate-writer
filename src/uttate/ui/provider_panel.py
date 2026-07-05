@@ -6,8 +6,7 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidg
 from uttate.config import ProviderSettings
 
 PROVIDER_LABELS: dict[str, str] = {
-    "mock": "Mock",
-    "lmstudio": "LM Studio",
+    "local_ai": "Local AI",
     "openai": "OpenAI",
     "gemini": "Google Gemini",
 }
@@ -51,7 +50,7 @@ class ProviderPanel(QWidget):
         self.set_settings(settings)
 
     def set_settings(self, settings: ProviderSettings, *, error: str = "") -> None:
-        provider_type = settings.type if settings.type in PROVIDER_LABELS else "mock"
+        provider_type = settings.type if settings.type in PROVIDER_LABELS else "local_ai"
         index = self.provider_combo.findData(provider_type)
         if index >= 0 and self.provider_combo.currentIndex() != index:
             self.provider_combo.blockSignals(True)
@@ -71,6 +70,8 @@ def _model_label(settings: ProviderSettings) -> str:
         return settings.gemini_model
     if settings.type == "openai":
         return settings.openai_model
-    if settings.type in {"lmstudio", "openai_compatible"}:
+    if settings.type in {"local_ai", "openai_compatible"}:
         return settings.compatible_model or "auto-detect"
-    return "mock"
+    return "local_ai"
+
+

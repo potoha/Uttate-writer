@@ -57,7 +57,7 @@ class ProviderError(RuntimeError):
 class ConversionProvider(Protocol):
     """Synchronous conversion boundary executed outside the UI thread.
 
-    Providers receive previous_context now even if the Mock ignores it. Keeping it in the
+    Providers receive previous_context even when a test double ignores it. Keeping it in the
     contract prevents Gemini/OpenAI support from leaking provider-specific parameters into UI.
     """
 
@@ -70,3 +70,4 @@ class ConversionProvider(Protocol):
     ) -> ProviderResult:
         """Convert one raw chunk into reviewable candidates."""
         ...
+

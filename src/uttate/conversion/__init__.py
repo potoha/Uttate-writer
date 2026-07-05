@@ -6,6 +6,7 @@ not-local direct API flow or a later main-derived local conversion core.
 
 from uttate.conversion.core import ConversionCore, ConversionRequest, DirectProviderCore
 from uttate.conversion.direct import CONVERSION_SCHEMA, build_conversion_prompt, load_system_prompt
+from uttate.conversion.local_ai import ReadingNormalizationProvider, ReadingNormalizer
 from uttate.conversion.response_parser import parse_provider_result
 
 __all__ = [
@@ -13,7 +14,10 @@ __all__ = [
     "ConversionCore",
     "ConversionRequest",
     "DirectProviderCore",
+    "ReadingNormalizationProvider",
+    "ReadingNormalizer",
     "build_conversion_prompt",
     "load_system_prompt",
     "parse_provider_result",
 ]
+

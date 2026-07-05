@@ -16,7 +16,7 @@ class ProviderSettings:
     are likely to share in issues.
     """
 
-    type: str = "mock"
+    type: str = "local_ai"
     model: str = ""
     timeout_seconds: float = 30.0
     previous_context_chars: int = 600
@@ -102,7 +102,9 @@ def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> 
 
 def _provider_from_sources(raw_provider: dict[str, Any], env: dict[str, str]) -> ProviderSettings:
     defaults = ProviderSettings()
-    provider_type = env.get("UTTATE_PROVIDER") or _string_value(raw_provider, "type", defaults.type)
+    provider_type = _canonical_provider_type(
+        env.get("UTTATE_PROVIDER") or _string_value(raw_provider, "type", defaults.type)
+    )
     return ProviderSettings(
         type=provider_type,
         model=_model_for_provider(provider_type, raw_provider, env, defaults),
@@ -257,6 +259,12 @@ def _bool_env(env: dict[str, str], key: str, default: bool) -> bool:
     raise ValueError(f"The {key} environment variable must be a boolean.")
 
 
+def _canonical_provider_type(provider_type: str) -> str:
+    if provider_type in {"mock", "lmstudio"}:
+        return "local_ai"
+    return provider_type
+
+
 def _model_for_provider(
     provider_type: str,
     raw_provider: dict[str, Any],
@@ -267,7 +275,7 @@ def _model_for_provider(
         return env.get("GEMINI_MODEL", defaults.gemini_model)
     if provider_type == "openai":
         return env.get("OPENAI_MODEL", defaults.openai_model)
-    if provider_type in {"lmstudio", "openai_compatible"}:
+    if provider_type in {"local_ai", "openai_compatible"}:
         return _compatible_env(
             env,
             "LMSTUDIO_MODEL",
@@ -310,3 +318,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
         if key:
             values[key] = value
     return values
+
+
+
+

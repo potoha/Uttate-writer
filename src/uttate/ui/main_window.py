@@ -22,7 +22,6 @@ from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
 from uttate.providers.base import ConversionProvider, ProviderError
 from uttate.providers.factory import create_conversion_provider
-from uttate.providers.mock import MockProvider
 from uttate.ui.chunk_list import ChunkListWidget
 from uttate.ui.input_panel import InputPanel
 from uttate.ui.provider_panel import ProviderPanel
@@ -590,10 +589,6 @@ def _provider_from_settings(settings: ProviderSettings) -> ConversionProvider:
         return create_conversion_provider(settings)
     except ProviderError:
         raise
-    except Exception:
-        if settings.type == "mock":
-            return MockProvider()
-        raise
 
 
 def _model_text(settings: ProviderSettings) -> str:
@@ -601,6 +596,8 @@ def _model_text(settings: ProviderSettings) -> str:
         return settings.gemini_model
     if settings.type == "openai":
         return settings.openai_model
-    if settings.type in {"lmstudio", "openai_compatible"}:
+    if settings.type in {"local_ai", "openai_compatible"}:
         return settings.compatible_model or "auto-detect"
-    return "mock"
+    return "local_ai"
+
+

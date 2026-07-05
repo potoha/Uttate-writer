@@ -1,10 +1,10 @@
+from uttate.conversion.direct import build_conversion_prompt
 from uttate.input_rules import (
     ProtectedKind,
     parse_protected_input,
     romaji_to_hiragana,
     romaji_to_katakana,
 )
-from uttate.providers.direct_conversion import build_conversion_prompt
 
 
 def test_katakana_name_tag_forces_katakana() -> None:

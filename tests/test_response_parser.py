@@ -1,6 +1,6 @@
 import pytest
 
-from uttate.pipeline.response_parser import parse_provider_result
+from uttate.conversion.response_parser import parse_provider_result
 
 
 def test_response_parser_accepts_plain_json() -> None:

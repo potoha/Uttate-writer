@@ -6,14 +6,10 @@ from typing import Any
 
 import httpx
 
+from uttate.conversion.direct import CONVERSION_SCHEMA, build_conversion_prompt, load_system_prompt
+from uttate.conversion.response_parser import parse_provider_result
 from uttate.models import JsonObject
-from uttate.pipeline.response_parser import parse_provider_result
 from uttate.providers.base import ConversionProvider, ProviderError, ProviderResult
-from uttate.providers.direct_conversion import (
-    CONVERSION_SCHEMA,
-    build_conversion_prompt,
-    load_system_prompt,
-)
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 LOGGER = logging.getLogger(__name__)

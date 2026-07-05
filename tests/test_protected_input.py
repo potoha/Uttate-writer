@@ -1,4 +1,4 @@
-from uttate.protected_input import (
+from uttate.input_rules import (
     ProtectedKind,
     parse_protected_input,
     romaji_to_hiragana,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from importlib import resources
 
+from uttate.input_rules import parse_protected_input, protected_terms_prompt
 from uttate.models import JsonObject
-from uttate.protected_input import parse_protected_input, protected_terms_prompt
 
 CONVERSION_SCHEMA: JsonObject = {
     "type": "object",

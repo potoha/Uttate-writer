@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from uttate.protected_input import parse_protected_input
+from uttate.input_rules import parse_protected_input
 from uttate.providers.base import Candidate, ProviderResult
 
 _KNOWN_CONVERSIONS: dict[str, tuple[str, str]] = {

@@ -12,6 +12,7 @@ from uttate.conversion.local_ai import (
     ReadingNormalizer,
 )
 from uttate.models import JsonObject
+from uttate.prompts.registry import LocalAIPromptRegistry
 from uttate.providers.base import ProviderResult
 
 
@@ -192,12 +193,16 @@ class LMStudioJSONClient(OpenAICompatibleJSONClient):
         messages: list[JsonObject],
         schema: JsonObject | None = None,
     ) -> JsonObject:
+        self.ensure_model()
+        return super().complete_json(messages, schema)
+
+    def ensure_model(self) -> str:
         if self._auto_detect_model:
             with self._model_lock:
                 if self._auto_detect_model:
                     self.model = self._discover_loaded_model()
                     self._auto_detect_model = False
-        return super().complete_json(messages, schema)
+        return self.model
 
     def _discover_loaded_model(self) -> str:
         try:
@@ -244,6 +249,7 @@ class LocalAIProvider(ReadingNormalizationProvider):
         model: str = "",
         timeout_seconds: float = 60.0,
         transport: httpx.BaseTransport | None = None,
+        prompt_registry: LocalAIPromptRegistry | None = None,
     ) -> None:
         client = LMStudioJSONClient(
             base_url=base_url,
@@ -253,7 +259,15 @@ class LocalAIProvider(ReadingNormalizationProvider):
             transport=transport,
         )
         self.client = client
-        super().__init__(ReadingNormalizer(client))
+        self.prompt_registry = prompt_registry or LocalAIPromptRegistry.load()
+        if model.strip():
+            self.prompt_registry.ensure_model_profile(model)
+        super().__init__(
+            ReadingNormalizer(
+                client,
+                system_prompt=self.prompt_registry.prompt_for_model(model),
+            )
+        )
 
     def convert(
         self,
@@ -262,6 +276,9 @@ class LocalAIProvider(ReadingNormalizationProvider):
         previous_context: str = "",
         candidate_count: int = 2,
     ) -> ProviderResult:
+        detected_model = self.client.ensure_model()
+        self.prompt_registry.ensure_model_profile(detected_model)
+        self.normalizer.system_prompt = self.prompt_registry.prompt_for_model(detected_model)
         result = super().convert(
             raw_text,
             previous_context=previous_context,

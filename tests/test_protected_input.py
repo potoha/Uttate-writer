@@ -1,6 +1,7 @@
 from uttate.conversion.direct import build_conversion_prompt
 from uttate.input_rules import (
     ProtectedKind,
+    mask_protected_input,
     parse_protected_input,
     romaji_to_hiragana,
     romaji_to_katakana,
@@ -41,6 +42,22 @@ def test_unclosed_tag_is_left_as_literal_text() -> None:
     assert parsed.terms == ()
 
 
+def test_protected_input_can_be_masked_and_restored() -> None:
+    masked = mask_protected_input("\\dedodamu\\ to =English= to $tokiori$")
+
+    assert masked.text == (
+        "__UTTATE_PROTECTED_0__ to __UTTATE_PROTECTED_1__ to __UTTATE_PROTECTED_2__"
+    )
+    assert [mask.kind for mask in masked.masks] == [
+        ProtectedKind.KATAKANA_NAME,
+        ProtectedKind.PRESERVE_ENGLISH,
+        ProtectedKind.HIRAGANA,
+    ]
+    assert masked.restore("__UTTATE_PROTECTED_0__ and __UTTATE_PROTECTED_2__") == (
+        "デドダム and ときおり"
+    )
+
+
 def test_romaji_helpers_cover_tag_conversions() -> None:
     assert romaji_to_katakana("dedodamu") == "デドダム"
     assert romaji_to_hiragana("tokiori") == "ときおり"
@@ -54,7 +71,13 @@ def test_conversion_prompt_includes_protected_terms_and_clean_input() -> None:
         candidate_count=2,
     )
 
-    assert "katakana_name: `dedodamu` -> `デドダム`" in prompt
-    assert "preserve_english: `English` -> `English`" in prompt
-    assert "hiragana: `tokiori` -> `ときおり`" in prompt
-    assert "入力:\nデドダム to English to ときおり" in prompt
+    assert "dedodamu" not in prompt
+    assert "English" not in prompt
+    assert "tokiori" not in prompt
+    assert "デドダム" not in prompt
+    assert "katakana_name: `__UTTATE_PROTECTED_0__`" in prompt
+    assert "preserve_english: `__UTTATE_PROTECTED_1__`" in prompt
+    assert "hiragana: `__UTTATE_PROTECTED_2__`" in prompt
+    assert (
+        "入力:\n__UTTATE_PROTECTED_0__ to __UTTATE_PROTECTED_1__ to __UTTATE_PROTECTED_2__"
+    ) in prompt

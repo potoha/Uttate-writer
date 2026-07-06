@@ -6,7 +6,12 @@ from typing import Any
 
 import httpx
 
-from uttate.conversion.direct import CONVERSION_SCHEMA, build_conversion_prompt, load_system_prompt
+from uttate.conversion.direct import (
+    CONVERSION_SCHEMA,
+    load_system_prompt,
+    prepare_conversion_prompt,
+    restore_masked_provider_result,
+)
 from uttate.conversion.response_parser import parse_provider_result
 from uttate.models import JsonObject
 from uttate.providers.base import ConversionProvider, ProviderError, ProviderResult
@@ -60,7 +65,13 @@ class GeminiProvider(ConversionProvider):
         if candidate_count <= 0:
             raise ValueError("candidate_count must be positive.")
 
-        payload = self._build_payload(raw_text, previous_context, candidate_count)
+        prompt, masked = prepare_conversion_prompt(
+            "",
+            raw_text=raw_text,
+            previous_context=previous_context,
+            candidate_count=candidate_count,
+        )
+        payload = self._build_payload(prompt)
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": self.api_key,
@@ -69,35 +80,22 @@ class GeminiProvider(ConversionProvider):
 
         response_data = _response_json(response)
         output_text = _output_text(response_data)
-        return parse_provider_result(
+        result = parse_provider_result(
             output_text,
             provider=self.name,
             model=self.model,
             candidate_count=candidate_count,
             raw_response=output_text,
         )
+        return restore_masked_provider_result(result, masked)
 
-    def _build_payload(
-        self,
-        raw_text: str,
-        previous_context: str,
-        candidate_count: int,
-    ) -> JsonObject:
+    def _build_payload(self, prompt: str) -> JsonObject:
         return {
             "systemInstruction": {"parts": [{"text": self._system_prompt}]},
             "contents": [
                 {
                     "role": "user",
-                    "parts": [
-                        {
-                            "text": _build_prompt(
-                                "",
-                                raw_text=raw_text,
-                                previous_context=previous_context,
-                                candidate_count=candidate_count,
-                            ).strip()
-                        }
-                    ],
+                    "parts": [{"text": prompt.strip()}],
                 }
             ],
             "generationConfig": {
@@ -154,21 +152,6 @@ class GeminiProvider(ConversionProvider):
                 )
                 raise ProviderError("Could not connect to Gemini API.") from error
         raise ProviderError("Gemini request failed after retries.")
-
-
-def _build_prompt(
-    system_prompt: str,
-    *,
-    raw_text: str,
-    previous_context: str,
-    candidate_count: int,
-) -> str:
-    return build_conversion_prompt(
-        system_prompt,
-        raw_text=raw_text,
-        previous_context=previous_context,
-        candidate_count=candidate_count,
-    )
 
 
 def _response_json(response: httpx.Response) -> JsonObject:

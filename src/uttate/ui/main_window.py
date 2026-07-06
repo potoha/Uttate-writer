@@ -20,6 +20,7 @@ from uttate.config import AppSettings, ProviderSettings, default_dataset_capture
 from uttate.keymap import GLOBAL_MODE, KeyConfig
 from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
+from uttate.prompts.registry import LocalAIPromptRegistry
 from uttate.providers.base import ConversionProvider, ProviderError
 from uttate.providers.factory import create_conversion_provider
 from uttate.ui.chunk_list import ChunkListWidget
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
         provider: ConversionProvider | None = None,
         *,
         settings: AppSettings | None = None,
+        prompt_registry: LocalAIPromptRegistry | None = None,
         max_workers: int = 2,
     ) -> None:
         super().__init__()
@@ -52,10 +54,16 @@ class MainWindow(QMainWindow):
 
         self.document = Document()
         self.settings = settings or AppSettings()
+        self.prompt_registry = prompt_registry
         self.key_config = KeyConfig.load()
         self._settings_window: SettingsWindow | None = None
         self._global_shortcuts: list[QShortcut] = []
-        initial_provider = provider or _provider_from_settings(self.settings.provider)
+        initial_provider = provider or _provider_from_settings(
+            self.settings.provider,
+            prompt_registry=(
+                self._prompt_registry() if self.settings.provider.type == "local_ai" else None
+            ),
+        )
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(max_workers)
         self.conversion_queue = ConversionQueue(initial_provider, self.thread_pool, parent=self)
@@ -145,7 +153,12 @@ class MainWindow(QMainWindow):
     def _change_provider(self, provider_type: str) -> None:
         next_settings = replace(self.settings.provider, type=provider_type)
         try:
-            provider = _provider_from_settings(next_settings)
+            provider = _provider_from_settings(
+                next_settings,
+                prompt_registry=(
+                    self._prompt_registry() if next_settings.type == "local_ai" else None
+                ),
+            )
         except Exception as error:  # noqa: BLE001 - provider setup errors are user-visible
             self.provider_panel.set_settings(self.settings.provider, error=str(error))
             self.statusBar().showMessage(f"Provider switch failed: {error}")
@@ -270,9 +283,15 @@ class MainWindow(QMainWindow):
             self._settings_window.raise_()
             self._settings_window.activateWindow()
             return
-        self._settings_window = SettingsWindow(self.key_config, self.settings, self)
+        self._settings_window = SettingsWindow(
+            self.key_config,
+            self.settings,
+            self._prompt_registry(),
+            self,
+        )
         self._settings_window.key_config_saved.connect(self._apply_key_config)
         self._settings_window.app_settings_saved.connect(self._apply_app_settings)
+        self._settings_window.local_ai_prompts_saved.connect(self._apply_local_ai_prompts)
         self._settings_window.show()
 
     @Slot(object)
@@ -286,6 +305,30 @@ class MainWindow(QMainWindow):
     def _apply_app_settings(self, settings: AppSettings) -> None:
         self.settings = settings
         self.statusBar().showMessage("Settings saved")
+
+    @Slot(object)
+    def _apply_local_ai_prompts(self, prompt_registry: LocalAIPromptRegistry) -> None:
+        self.prompt_registry = prompt_registry
+        if self.settings.provider.type != "local_ai":
+            self.statusBar().showMessage("Local AI prompts saved")
+            return
+        try:
+            provider = _provider_from_settings(
+                self.settings.provider,
+                prompt_registry=self.prompt_registry,
+            )
+        except Exception as error:  # noqa: BLE001 - provider setup errors are user-visible
+            self.provider_panel.set_settings(self.settings.provider, error=str(error))
+            self.statusBar().showMessage(f"Prompt apply failed: {error}")
+            return
+        self.conversion_queue.set_provider(provider)
+        self.provider_panel.set_settings(self.settings.provider)
+        self.statusBar().showMessage("Local AI prompts saved and applied")
+
+    def _prompt_registry(self) -> LocalAIPromptRegistry:
+        if self.prompt_registry is None:
+            self.prompt_registry = LocalAIPromptRegistry.load()
+        return self.prompt_registry
 
     def _refresh_global_shortcuts(self) -> None:
         for shortcut in self._global_shortcuts:
@@ -584,9 +627,13 @@ class MainWindow(QMainWindow):
         )
 
 
-def _provider_from_settings(settings: ProviderSettings) -> ConversionProvider:
+def _provider_from_settings(
+    settings: ProviderSettings,
+    *,
+    prompt_registry: LocalAIPromptRegistry | None = None,
+) -> ConversionProvider:
     try:
-        return create_conversion_provider(settings)
+        return create_conversion_provider(settings, prompt_registry=prompt_registry)
     except ProviderError:
         raise
 

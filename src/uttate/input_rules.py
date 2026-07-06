@@ -18,9 +18,29 @@ class ProtectedTerm:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectedMask:
+    placeholder: str
+    kind: ProtectedKind
+    source: str
+    replacement: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProtectedInput:
     text: str
     terms: tuple[ProtectedTerm, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MaskedProtectedInput:
+    text: str
+    masks: tuple[ProtectedMask, ...]
+
+    def restore(self, text: str) -> str:
+        restored = text
+        for mask in self.masks:
+            restored = restored.replace(mask.placeholder, mask.replacement)
+        return restored
 
 
 TAG_KINDS = {
@@ -67,6 +87,51 @@ def parse_protected_input(raw_text: str) -> ProtectedInput:
     return ProtectedInput("".join(output), tuple(terms))
 
 
+def mask_protected_input(raw_text: str) -> MaskedProtectedInput:
+    output: list[str] = []
+    masks: list[ProtectedMask] = []
+    index = 0
+
+    while index < len(raw_text):
+        char = raw_text[index]
+        if char not in TAG_KINDS:
+            output.append(char)
+            index += 1
+            continue
+
+        if _is_escaped_marker(raw_text, index, char):
+            output.append(char)
+            index += 2
+            continue
+
+        close_index = _find_closing_marker(raw_text, index + 1, char)
+        if close_index is None:
+            output.append(char)
+            index += 1
+            continue
+
+        source = raw_text[index + 1 : close_index].strip()
+        if not source:
+            output.append(char)
+            index += 1
+            continue
+
+        term = _protected_term(TAG_KINDS[char], source)
+        placeholder = f"__UTTATE_PROTECTED_{len(masks)}__"
+        masks.append(
+            ProtectedMask(
+                placeholder=placeholder,
+                kind=term.kind,
+                source=term.source,
+                replacement=term.replacement,
+            )
+        )
+        output.append(placeholder)
+        index = close_index + 1
+
+    return MaskedProtectedInput("".join(output), tuple(masks))
+
+
 def protected_terms_prompt(terms: tuple[ProtectedTerm, ...]) -> str:
     if not terms:
         return "保護指定: (なし)"
@@ -82,6 +147,25 @@ def protected_terms_prompt(terms: tuple[ProtectedTerm, ...]) -> str:
             "- preserve_english は翻訳・カタカナ化・大文字小文字変更をしない",
             "- katakana_name は指定済みのカタカナ表記を使う",
             "- hiragana は漢字化・カタカナ化せず、指定済みのひらがな表記を使う",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def protected_masks_prompt(masks: tuple[ProtectedMask, ...]) -> str:
+    if not masks:
+        return "保護placeholder: (なし)"
+
+    lines = ["保護placeholder:"]
+    for mask in masks:
+        lines.append(f"- {mask.kind.value}: `{mask.placeholder}`")
+    lines.extend(
+        [
+            "",
+            "保護placeholderの制約:",
+            "- placeholder は出力候補内で必ずそのまま使う",
+            "- placeholder の中身はアプリ側で復元するため、推測・翻訳・変換しない",
+            "- placeholder を分割、削除、言い換え、大文字小文字変更しない",
         ]
     )
     return "\n".join(lines)

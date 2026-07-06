@@ -18,6 +18,7 @@ build/
 htmlcov/
 .artifacts/
 logs/
+agent-work-logs/
 *.log
 data/sft/
 data/datasets/

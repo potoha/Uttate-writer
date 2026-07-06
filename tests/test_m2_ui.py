@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QPlainTextEdit
 from uttate.addons.dataset_curator import load_candidates
 from uttate.config import AppSettings, DatasetCaptureSettings, ProviderSettings
 from uttate.models import ChunkStatus
+from uttate.prompts.registry import LocalAIPromptProfile, LocalAIPromptRegistry
 from uttate.providers.base import Candidate, ProviderResult
 from uttate.ui.main_window import ConsoleMode, MainWindow
 
@@ -76,6 +77,21 @@ def submit(qtbot, window: MainWindow, text: str) -> None:
 
 def wait_until_idle(qtbot, window: MainWindow) -> None:
     qtbot.waitUntil(lambda: window.conversion_queue.active_count == 0, timeout=3000)
+
+
+def prompt_registry_for_tests(tmp_path) -> LocalAIPromptRegistry:
+    return LocalAIPromptRegistry(
+        tmp_path / "local_ai_prompts.yaml",
+        {
+            "default": LocalAIPromptProfile(
+                name="default",
+                model="",
+                prompt="default prompt",
+                default_prompt_snapshot="default prompt",
+            )
+        },
+        default_prompt="default prompt",
+    )
 
 
 def test_enter_commits_multiple_chunks_without_waiting(qtbot) -> None:
@@ -413,9 +429,13 @@ def test_review_mode_r_resends_error_chunk(qtbot) -> None:
     assert chunk.candidate_1 == "変換候補A: retry me"
 
 
-def test_provider_switch_updates_future_chunks(qtbot) -> None:
+def test_provider_switch_updates_future_chunks(qtbot, tmp_path) -> None:
     settings = AppSettings(provider=ProviderSettings(type="openai", openai_api_key="dummy-openai"))
-    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    window = MainWindow(
+        DeterministicProvider(delay_seconds=0),
+        settings=settings,
+        prompt_registry=prompt_registry_for_tests(tmp_path),
+    )
     qtbot.addWidget(window)
 
     window.provider_panel.provider_combo.setCurrentIndex(
@@ -426,8 +446,11 @@ def test_provider_switch_updates_future_chunks(qtbot) -> None:
     assert "auto-detect" in window.provider_panel.model_label.text()
 
 
-def test_settings_button_opens_key_settings_window(qtbot) -> None:
-    window = MainWindow(DeterministicProvider(delay_seconds=0))
+def test_settings_button_opens_key_settings_window(qtbot, tmp_path) -> None:
+    window = MainWindow(
+        DeterministicProvider(delay_seconds=0),
+        prompt_registry=prompt_registry_for_tests(tmp_path),
+    )
     qtbot.addWidget(window)
     window.show()
 
@@ -437,8 +460,11 @@ def test_settings_button_opens_key_settings_window(qtbot) -> None:
     assert window._settings_window.isVisible()
 
 
-def test_f12_opens_key_settings_window(qtbot) -> None:
-    window = MainWindow(DeterministicProvider(delay_seconds=0))
+def test_f12_opens_key_settings_window(qtbot, tmp_path) -> None:
+    window = MainWindow(
+        DeterministicProvider(delay_seconds=0),
+        prompt_registry=prompt_registry_for_tests(tmp_path),
+    )
     qtbot.addWidget(window)
     window.show()
     window.input_panel.editor.setFocus()

@@ -12,10 +12,9 @@
 - 明らかなタイポは文脈から補正してよい
 - AI, IME, API, LLM, GPU, NPU などの略語は自然なら保持する
 - Uttate, Uttate Writer などの固有名詞は保持する
-- 入力に保護指定がある場合、その replacement を候補内で必ず指定表記のまま使う
-- preserve_english の保護語は翻訳・カタカナ化・大文字小文字変更をしない
-- katakana_name の保護語は指定済みのカタカナ表記を使う
-- hiragana の保護語は漢字化・カタカナ化せず、指定済みのひらがな表記を使う
+- 入力に保護placeholderがある場合、そのplaceholderを候補内で必ず一字一句そのまま使う
+- placeholderの中身はアプリ側で復元するため、推測・翻訳・変換・分割しない
+- preserve_english / katakana_name / hiragana の保護指定はplaceholderとして渡される
 - 候補1は忠実に、候補2は少し自然にする
 - 判断できない語は uncertain に残す
 - JSONのみ返す

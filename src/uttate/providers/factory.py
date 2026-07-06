@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from uttate.config import ProviderSettings
+from uttate.prompts.registry import LocalAIPromptRegistry
 from uttate.providers.base import ConversionProvider
 from uttate.providers.gemini import GeminiProvider
 from uttate.providers.local_ai import LocalAIProvider
 from uttate.providers.openai import OpenAIProvider
 
 
-def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider:
+def create_conversion_provider(
+    settings: ProviderSettings,
+    *,
+    prompt_registry: LocalAIPromptRegistry | None = None,
+) -> ConversionProvider:
     """Create the direct-conversion provider selected by Project B settings."""
 
     if settings.type == "gemini":
@@ -29,5 +34,6 @@ def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider
             api_key=settings.compatible_api_key,
             model=settings.compatible_model,
             timeout_seconds=settings.timeout_seconds,
+            prompt_registry=prompt_registry,
         )
     raise ValueError(f"Unsupported provider type: {settings.type}")

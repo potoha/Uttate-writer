@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Any, Protocol
 
+from uttate.input_rules import MaskedProtectedInput, ProtectedMask, mask_protected_input
 from uttate.models import JsonObject
 from uttate.providers.base import Candidate, ProviderResult
 
@@ -341,6 +342,12 @@ class ReadingNormalizationResult:
     uncertain: tuple[JsonObject, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedLocalAIInput:
+    masked: MaskedProtectedInput
+    boundary_segments: tuple[JsonObject, ...]
+
+
 class LocalAILLMProvider(Protocol):
     """Structured JSON boundary used by the main-derived local AI normalizer."""
 
@@ -364,22 +371,25 @@ class ReadingNormalizer:
         if max_validation_attempts <= 0:
             raise ValueError("max_validation_attempts must be positive.")
         self.provider = provider
-        self.system_prompt = system_prompt or _load_system_prompt()
+        self.system_prompt = system_prompt or load_default_system_prompt()
         self.max_validation_attempts = max_validation_attempts
 
     def normalize(self, raw_text: str) -> ReadingNormalizationResult:
         if not raw_text.strip():
             raise ValueError("raw_text must not be empty.")
+        prepared = _prepare_local_ai_input(raw_text)
+        model_text = prepared.masked.text
         messages: list[JsonObject] = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": _input_payload(raw_text)},
+            {"role": "user", "content": _input_payload(prepared)},
         ]
         last_error: ValueError | None = None
         for attempt in range(self.max_validation_attempts):
             response = self.provider.complete_json(messages, READING_NORMALIZATION_SCHEMA)
-            response = _apply_required_readings(response, raw_text)
+            response = _apply_required_readings(response, model_text)
             try:
-                return _validate_response(response, raw_text)
+                result = _validate_response(response, model_text)
+                return _restore_masked_result(result, prepared.masked)
             except ValueError as error:
                 last_error = error
                 if attempt + 1 == self.max_validation_attempts:
@@ -392,7 +402,7 @@ class ReadingNormalizer:
                         },
                         {
                             "role": "user",
-                            "content": _repair_payload(raw_text, str(error)),
+                            "content": _repair_payload(prepared, str(error)),
                         },
                     ]
                 )
@@ -427,7 +437,7 @@ class ReadingNormalizationProvider:
         )
 
 
-def _load_system_prompt() -> str:
+def load_default_system_prompt() -> str:
     return (
         resources.files("uttate.prompts")
         .joinpath("reading_normalizer.txt")
@@ -527,11 +537,27 @@ def _required_string(value: dict[str, Any], key: str, location: str) -> str:
     return result
 
 
-def _input_payload(raw_text: str) -> str:
+def _prepare_local_ai_input(raw_text: str) -> PreparedLocalAIInput:
+    masked = mask_protected_input(raw_text)
+    return PreparedLocalAIInput(
+        masked=masked,
+        boundary_segments=tuple(_boundary_segments(masked.text)),
+    )
+
+
+def _input_payload(prepared: PreparedLocalAIInput) -> str:
+    raw_text = prepared.masked.text
     return json.dumps(
         {
             "task": "reading_normalization_only",
             "original_raw": raw_text,
+            "original_raw_masked": raw_text,
+            "protected_placeholders": _protected_placeholders(prepared.masked.masks),
+            "boundary_rule": (
+                "Treat `|` as the Uttate rough-input separator inserted by Space. "
+                "Do not merge, reorder, or infer across boundaries unless the raw text requires it."
+            ),
+            "preprocessed_segments": prepared.boundary_segments,
             "contract": {
                 "preserve_meaning": True,
                 "preserve_order": True,
@@ -539,6 +565,8 @@ def _input_payload(raw_text: str) -> str:
                 "do_not_translate_english": True,
                 "cover_each_non_whitespace_character_once": True,
                 "when_uncertain": "keep the raw span and report it in uncertain",
+                "preserve_placeholders": True,
+                "use_mechanical_reading_patterns_as_hints": True,
             },
             "required_exact_mappings": _required_exact_mappings(raw_text),
             "ascii_classification_hints": _ascii_classification_hints(raw_text),
@@ -547,21 +575,207 @@ def _input_payload(raw_text: str) -> str:
     )
 
 
-def _repair_payload(raw_text: str, validation_error: str) -> str:
+def _repair_payload(prepared: PreparedLocalAIInput, validation_error: str) -> str:
+    raw_text = prepared.masked.text
     return json.dumps(
         {
             "task": "repair_invalid_reading_normalization",
             "original_raw": raw_text,
+            "original_raw_masked": raw_text,
+            "protected_placeholders": _protected_placeholders(prepared.masked.masks),
+            "preprocessed_segments": prepared.boundary_segments,
             "validation_error": validation_error,
             "required_exact_mappings": _required_exact_mappings(raw_text),
             "ascii_classification_hints": _ascii_classification_hints(raw_text),
             "instruction": (
                 "Regenerate from original_raw. Do not defend or explain the previous output. "
-                "Return only a schema-compliant object that satisfies the fidelity contract."
+                "Return only a schema-compliant object that satisfies the fidelity contract. "
+                "Protected placeholders must be copied exactly and not interpreted."
             ),
         },
         ensure_ascii=False,
     )
+
+
+def _protected_placeholders(masks: tuple[ProtectedMask, ...]) -> list[JsonObject]:
+    return [
+        {
+            "placeholder": mask.placeholder,
+            "kind": mask.kind.value,
+            "instruction": "Copy this placeholder exactly. It will be restored after validation.",
+        }
+        for mask in masks
+    ]
+
+
+def _boundary_segments(raw_text: str) -> list[JsonObject]:
+    segments: list[JsonObject] = []
+    current: list[str] = []
+    for character in raw_text:
+        if character == "|":
+            if current:
+                segments.append(_mechanical_segment("".join(current)))
+                current = []
+            segments.append(
+                {
+                    "raw_masked": character,
+                    "mechanical_strict": character,
+                    "mechanical_typo_tolerant": character,
+                    "kind": "boundary",
+                    "suspicious_tokens": [],
+                }
+            )
+            continue
+        current.append(character)
+    if current:
+        segments.append(_mechanical_segment("".join(current)))
+    return segments
+
+
+def _mechanical_segment(text: str) -> JsonObject:
+    suspicious_tokens: list[JsonObject] = []
+    return {
+        "raw_masked": text,
+        "mechanical_strict": _mechanical_reading(text, typo_tolerant=False, suspicious=None),
+        "mechanical_typo_tolerant": _mechanical_reading(
+            text,
+            typo_tolerant=True,
+            suspicious=suspicious_tokens,
+        ),
+        "kind": "text",
+        "suspicious_tokens": suspicious_tokens,
+    }
+
+
+def _mechanical_reading(
+    text: str,
+    *,
+    typo_tolerant: bool,
+    suspicious: list[JsonObject] | None,
+) -> str:
+    output: list[str] = []
+    last_index = 0
+    for match in _ROMAJI_TOKEN_PATTERN.finditer(text):
+        output.append(text[last_index : match.start()])
+        token = match.group(0)
+        output.append(_mechanical_token_reading(token, typo_tolerant, suspicious))
+        last_index = match.end()
+    output.append(text[last_index:])
+    return "".join(output)
+
+
+def _mechanical_token_reading(
+    token: str,
+    typo_tolerant: bool,
+    suspicious: list[JsonObject] | None,
+) -> str:
+    particle = _PARTICLE_READINGS.get(token.casefold())
+    if particle is not None:
+        return particle
+    strict = _romaji_to_hiragana(token)
+    if strict is not None and token.islower():
+        return strict
+    if not token.islower() or not typo_tolerant:
+        if suspicious is not None and _is_suspicious_japanese_token(token):
+            suspicious.append(
+                {
+                    "raw": token,
+                    "reason": "not fully parseable as Japanese romaji; may be typo or non-Japanese",
+                }
+            )
+        return token
+    tolerant, changed = _romaji_to_hiragana_tolerant(token)
+    if suspicious is not None and _is_suspicious_japanese_token(token):
+        suspicious.append(
+            {
+                "raw": token,
+                "reason": (
+                    "contains consonant/vowel pattern that is not valid Japanese romaji "
+                    "except yoon, n, or small-tsu"
+                ),
+            }
+        )
+    return tolerant if changed else token
+
+
+def _romaji_to_hiragana_tolerant(token: str) -> tuple[str, bool]:
+    value = token.casefold()
+    index = 0
+    reading: list[str] = []
+    changed = False
+    while index < len(value):
+        if (
+            index + 1 < len(value)
+            and value[index] == value[index + 1]
+            and value[index] not in "aeioun"
+        ):
+            reading.append("っ")
+            index += 1
+            changed = True
+            continue
+        if value[index] == "n" and (index + 1 == len(value) or value[index + 1] not in "aeiouy"):
+            reading.append("ん")
+            index += 1
+            changed = True
+            continue
+        syllable = next(
+            (item for item in _ROMAJI_SYLLABLES if value.startswith(item, index)),
+            None,
+        )
+        if syllable is None:
+            reading.append(token[index])
+            index += 1
+            continue
+        reading.append(_ROMAJI_TO_HIRAGANA[syllable])
+        index += len(syllable)
+        changed = True
+    return "".join(reading), changed
+
+
+def _is_suspicious_japanese_token(token: str) -> bool:
+    if not token.isascii() or not token.isalpha() or not token.islower():
+        return False
+    if not any(character in "aeiou" for character in token):
+        return True
+    if token[-1] not in "aeioun":
+        return True
+    return _romaji_to_hiragana(token) is None and _has_japanese_like_vowel_pattern(token)
+
+
+def _has_japanese_like_vowel_pattern(token: str) -> bool:
+    vowels = set("aeiou")
+    consonant_run = 0
+    for index, character in enumerate(token):
+        if character in vowels:
+            consonant_run = 0
+            continue
+        if character == "n":
+            consonant_run = 0
+            continue
+        consonant_run += 1
+        if consonant_run >= 2:
+            pair = token[index - 1 : index + 1]
+            if pair not in {"ky", "sh", "ch", "ny", "hy", "my", "ry", "gy", "by", "py", "ts"}:
+                return True
+    return False
+
+
+def _restore_masked_result(
+    result: ReadingNormalizationResult,
+    masked: MaskedProtectedInput,
+) -> ReadingNormalizationResult:
+    return ReadingNormalizationResult(
+        normalized=masked.restore(result.normalized),
+        segments=tuple(_restore_masked_object(segment, masked) for segment in result.segments),
+        uncertain=tuple(_restore_masked_object(item, masked) for item in result.uncertain),
+    )
+
+
+def _restore_masked_object(value: JsonObject, masked: MaskedProtectedInput) -> JsonObject:
+    restored: JsonObject = {}
+    for key, item in value.items():
+        restored[key] = masked.restore(item) if isinstance(item, str) else item
+    return restored
 
 
 def _without_whitespace(value: str) -> str:

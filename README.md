@@ -12,6 +12,8 @@ kyouhaAPIwotukattehenkannosikennwosuru
 ## これは何か
 
 このリポジトリは **Project B / API Provider Branch** です。
+2026年7月6日：mainとマージしました。今後はmainブランチで開発を進めます。
+
 
 もともとの青写真は、ローマ字・かな・英語混じりのラフ入力を日本語へ変換するための専用小型モデルを作り、QLoRA / SFTなどで追加学習し、最終的にはオンプレミスまたは完全ローカル環境で使える日本語入力支援ツールにすることです。
 
@@ -135,6 +137,27 @@ LMSTUDIO_MODEL=
 
 `local_ai` は自然文候補A/Bではなく、Stage 1の忠実な読み転写を `faithful_reading` 候補として返します。
 
+API Providerへ送る前に、特殊タグで保護した文字列は `__UTTATE_PROTECTED_0__` のようなplaceholderへ置き換えます。タグ内の元文字列や変換後文字列はGemini / OpenAI / Local AIへ送らず、応答を検証した後にアプリ側で機械的に復元します。
+
+また、入力画面で `Space` を押すと挿入される ` | ` はUttate rough-input separatorとして扱います。Local AI payloadには、この区切りごとの機械読み候補を2種類入れます。
+
+- `mechanical_strict`: 確実にローマ字として読めるものだけ、かな・英語交じりに機械変換
+- `mechanical_typo_tolerant`: 拗音・撥音・促音以外の母音/子音ペア規則から外れる語を、タイポまたは日本語以外の可能性として扱う補助候補
+
+### Local AI prompt profile
+
+Local AIに送るsystem promptは、起動時に次のYAMLから読み込まれます。
+
+```text
+%USERPROFILE%\.uttate\registry\promptsf\local_ai_prompts.yaml
+```
+
+このYAMLを起動中に直接編集しても、直ちには反映されません。反映されるのは次回起動時です。
+
+起動中にpromptを変更したい場合は、`F12` の設定画面にあるLocal-AI promptからprofileを選択し、`適用する (Ctrl+R)` または `変更して閉じる (Ctrl+Enter)` を使ってください。この場合はYAMLへ保存され、現在のLocal AI Providerにも直ちに反映されます。
+
+Local AIのモデル名が自動検出または設定されたとき、そのモデル専用profileがなければ自動作成されます。組み込みdefault promptが更新された場合、旧default promptのまま未編集だったprofileは新しいdefault promptへ追従します。独自編集済みのprofileは上書きしません。
+
 ## 操作
 
 - 入力欄で `Enter`: 現在のラフ入力をチャンクとして送信
@@ -153,6 +176,8 @@ LMSTUDIO_MODEL=
 = English=   英語のまま保持: English
 $tokiori$    ひらがなにする: ときおり
 ```
+
+Gemini / OpenAI / Local AI使用時、これらのタグ内文字列はAPIへ直接送られず、placeholderとして送信されます。復元はアプリ側で行います。
 
 タグ記号そのものを入力したい場合は、同じ記号を2回続けます。
 

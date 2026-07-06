@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from importlib import resources
 
-from uttate.input_rules import parse_protected_input, protected_terms_prompt
+from uttate.input_rules import (
+    MaskedProtectedInput,
+    mask_protected_input,
+    protected_masks_prompt,
+)
 from uttate.models import JsonObject
+from uttate.providers.base import Candidate, ProviderResult
 
 CONVERSION_SCHEMA: JsonObject = {
     "type": "object",
@@ -57,11 +62,62 @@ def build_conversion_prompt(
     """Build the user-visible payload shared by Gemini/OpenAI direct providers."""
 
     context = previous_context.strip() or "(なし)"
-    protected_input = parse_protected_input(raw_text.strip())
+    protected_input = mask_protected_input(raw_text.strip())
     return (
         f"{system_prompt}\n\n"
         f"候補数: {candidate_count}\n\n"
         f"直前の文脈:\n{context}\n\n"
-        f"{protected_terms_prompt(protected_input.terms)}\n\n"
+        f"{protected_masks_prompt(protected_input.masks)}\n\n"
         f"入力:\n{protected_input.text}\n"
     )
+
+
+def prepare_conversion_prompt(
+    system_prompt: str,
+    *,
+    raw_text: str,
+    previous_context: str,
+    candidate_count: int,
+) -> tuple[str, MaskedProtectedInput]:
+    masked = mask_protected_input(raw_text.strip())
+    context = previous_context.strip() or "(なし)"
+    prompt = (
+        f"{system_prompt}\n\n"
+        f"候補数: {candidate_count}\n\n"
+        f"直前の文脈:\n{context}\n\n"
+        f"{protected_masks_prompt(masked.masks)}\n\n"
+        f"入力:\n{masked.text}\n"
+    )
+    return prompt, masked
+
+
+def restore_masked_provider_result(
+    result: ProviderResult,
+    masked: MaskedProtectedInput,
+) -> ProviderResult:
+    return ProviderResult(
+        candidates=tuple(
+            Candidate(candidate.label, masked.restore(candidate.text))
+            for candidate in result.candidates
+        ),
+        uncertain=tuple(_restore_uncertain(item, masked) for item in result.uncertain),
+        provider=result.provider,
+        model=result.model,
+        raw_response=result.raw_response,
+        usage=result.usage,
+    )
+
+
+def _restore_uncertain(value: JsonObject, masked: MaskedProtectedInput) -> JsonObject:
+    restored: JsonObject = {}
+    for key, item in value.items():
+        if isinstance(item, str):
+            restored[key] = masked.restore(item)
+        elif isinstance(item, list):
+            restored[key] = [
+                masked.restore(candidate) if isinstance(candidate, str) else candidate
+                for candidate in item
+            ]
+        else:
+            restored[key] = item
+    return restored

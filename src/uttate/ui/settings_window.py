@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +31,7 @@ from uttate.config import (
     save_settings,
 )
 from uttate.keymap import DEFAULT_BINDINGS, KeyConfig, key_sequence_from_event
+from uttate.prompts.registry import PROMPT_REGISTRY_NOTICE, LocalAIPromptRegistry
 
 MODE_LABELS = {
     "global": "Global",
@@ -66,11 +69,13 @@ class KeyCaptureDialog(QDialog):
 class SettingsWindow(QDialog):
     key_config_saved = Signal(KeyConfig)
     app_settings_saved = Signal(AppSettings)
+    local_ai_prompts_saved = Signal(object)
 
     def __init__(
         self,
         key_config: KeyConfig,
         settings: AppSettings | None = None,
+        prompt_registry: LocalAIPromptRegistry | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -78,6 +83,7 @@ class SettingsWindow(QDialog):
         self.resize(780, 560)
         self.key_config = key_config
         self.app_settings = settings or AppSettings()
+        self.prompt_registry = prompt_registry or LocalAIPromptRegistry.load()
 
         self.mode_buttons: dict[str, QPushButton] = {}
         self.dataset_capture_checkbox = QCheckBox("Record review accepts as dataset candidates")
@@ -100,15 +106,32 @@ class SettingsWindow(QDialog):
         self.reset_button = QPushButton("Reset selected")
         self.reset_all_button = QPushButton("Reset all")
         self.save_button = QPushButton("Save")
+        self.prompt_profile_combo = QComboBox()
+        self.prompt_editor = QPlainTextEdit()
+        self.prompt_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.prompt_notice = QLabel(
+            "起動中に YAML を直接編集しても直ちには反映されません。"
+            "F12 設定画面で適用した変更だけ直ちに反映します。"
+        )
+        self.prompt_notice.setWordWrap(True)
+        self.prompt_notice.setObjectName("sectionHint")
+        self.prompt_status_label = QLabel(PROMPT_REGISTRY_NOTICE)
+        self.prompt_status_label.setWordWrap(True)
+        self.prompt_status_label.setObjectName("sectionHint")
+        self.prompt_close_button = QPushButton("変更せず閉じる (Escape)")
+        self.prompt_apply_button = QPushButton("適用する (Ctrl+R)")
+        self.prompt_apply_close_button = QPushButton("変更して閉じる (Ctrl+Enter)")
 
         self.current_mode = "global"
         self._build_layout()
         self._connect_signals()
         self._select_mode("global")
+        self._populate_prompt_profiles()
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_dataset_group())
+        layout.addWidget(self._build_prompt_group(), 1)
 
         mode_bar = QHBoxLayout()
         for mode, label in MODE_LABELS.items():
@@ -140,6 +163,26 @@ class SettingsWindow(QDialog):
         layout.addLayout(path_row)
         return group
 
+    def _build_prompt_group(self) -> QGroupBox:
+        group = QGroupBox("Local-AI prompt")
+        layout = QVBoxLayout(group)
+
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Profile"))
+        profile_row.addWidget(self.prompt_profile_combo, 1)
+        layout.addLayout(profile_row)
+        layout.addWidget(self.prompt_editor, 1)
+        layout.addWidget(self.prompt_notice)
+        layout.addWidget(self.prompt_status_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(self.prompt_close_button)
+        button_row.addWidget(self.prompt_apply_button)
+        button_row.addWidget(self.prompt_apply_close_button)
+        layout.addLayout(button_row)
+        return group
+
     def _connect_signals(self) -> None:
         for mode, button in self.mode_buttons.items():
             button.clicked.connect(
@@ -150,6 +193,16 @@ class SettingsWindow(QDialog):
         self.reset_button.clicked.connect(self._reset_selected)
         self.reset_all_button.clicked.connect(self._reset_all)
         self.save_button.clicked.connect(self._save)
+        self.prompt_profile_combo.currentIndexChanged.connect(self._load_selected_prompt_profile)
+        self.prompt_close_button.clicked.connect(self.reject)
+        self.prompt_apply_button.clicked.connect(self._apply_prompt_changes)
+        self.prompt_apply_close_button.clicked.connect(self._apply_prompt_changes_and_close)
+        self.prompt_close_button.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.prompt_apply_button.setShortcut(QKeySequence("Ctrl+R"))
+        self.prompt_apply_close_button.setShortcut(QKeySequence("Ctrl+Return"))
+        QShortcut(QKeySequence("Ctrl+Enter"), self).activated.connect(
+            self._apply_prompt_changes_and_close
+        )
 
     def _select_mode(self, mode: str) -> None:
         self.current_mode = mode
@@ -169,6 +222,26 @@ class SettingsWindow(QDialog):
             self.table.setItem(row, 3, QTableWidgetItem(binding.note))
         if bindings:
             self.table.selectRow(0)
+
+    def _populate_prompt_profiles(self) -> None:
+        self.prompt_profile_combo.blockSignals(True)
+        self.prompt_profile_combo.clear()
+        for name in self.prompt_registry.profile_names():
+            profile = self.prompt_registry.profile(name)
+            label = name if not profile.model else f"{name} ({profile.model})"
+            self.prompt_profile_combo.addItem(label, name)
+        self.prompt_profile_combo.blockSignals(False)
+        if self.prompt_profile_combo.count():
+            self.prompt_profile_combo.setCurrentIndex(0)
+            self._load_selected_prompt_profile()
+
+    def _load_selected_prompt_profile(self) -> None:
+        profile_name = self._selected_prompt_profile_name()
+        if profile_name is None:
+            self.prompt_editor.clear()
+            return
+        self.prompt_editor.setPlainText(self.prompt_registry.profile(profile_name).prompt)
+        self.prompt_status_label.setText(f"Editing {profile_name}: {self.prompt_registry.path}")
 
     def _selected_action(self) -> str | None:
         row = self.table.currentRow()
@@ -213,6 +286,24 @@ class SettingsWindow(QDialog):
         self.key_config = KeyConfig(DEFAULT_BINDINGS)
         self._populate_table()
 
+    def _apply_prompt_changes(self) -> bool:
+        profile_name = self._selected_prompt_profile_name()
+        if profile_name is None:
+            return False
+        try:
+            self.prompt_registry.set_prompt(profile_name, self.prompt_editor.toPlainText())
+            self.prompt_registry.save()
+        except (KeyError, OSError) as error:
+            QMessageBox.critical(self, "Prompt save failed", str(error))
+            return False
+        self.local_ai_prompts_saved.emit(self.prompt_registry)
+        self.prompt_status_label.setText(f"Saved {profile_name}: {self.prompt_registry.path}")
+        return True
+
+    def _apply_prompt_changes_and_close(self) -> None:
+        if self._apply_prompt_changes():
+            self.accept()
+
     def _save(self) -> None:
         conflicts = self.key_config.find_conflicts()
         if conflicts:
@@ -246,3 +337,7 @@ class SettingsWindow(QDialog):
 
     def _dataset_store_text(self) -> str:
         return self.app_settings.dataset.capture_store_path or str(default_dataset_capture_path())
+
+    def _selected_prompt_profile_name(self) -> str | None:
+        profile_name = self.prompt_profile_combo.currentData()
+        return profile_name if isinstance(profile_name, str) else None

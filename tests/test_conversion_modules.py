@@ -42,7 +42,12 @@ def test_legacy_direct_conversion_module_reexports_new_prompt_builder() -> None:
     )
 
     assert legacy_prompt == prompt
-    assert "入力:\nデドダム to English to ときおり" in prompt
+    assert "dedodamu" not in prompt
+    assert "English" not in prompt
+    assert "tokiori" not in prompt
+    assert (
+        "入力:\n__UTTATE_PROTECTED_0__ to __UTTATE_PROTECTED_1__ to __UTTATE_PROTECTED_2__"
+    ) in prompt
 
 
 def test_legacy_response_parser_module_reexports_new_parser() -> None:

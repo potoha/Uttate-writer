@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from uttate.config import ProviderSettings
+from uttate.prompts.registry import LocalAIPromptProfile, LocalAIPromptRegistry
 from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.factory import create_conversion_provider
 from uttate.providers.gemini import GeminiProvider
@@ -45,8 +46,23 @@ def test_factory_creates_openai_provider() -> None:
     assert isinstance(provider, OpenAIProvider)
 
 
-def test_factory_creates_local_ai_provider() -> None:
-    provider = create_conversion_provider(ProviderSettings(type="local_ai"))
+def test_factory_creates_local_ai_provider(tmp_path) -> None:
+    registry = LocalAIPromptRegistry(
+        tmp_path / "local_ai_prompts.yaml",
+        {
+            "default": LocalAIPromptProfile(
+                name="default",
+                model="",
+                prompt="default prompt",
+                default_prompt_snapshot="default prompt",
+            )
+        },
+        default_prompt="default prompt",
+    )
+    provider = create_conversion_provider(
+        ProviderSettings(type="local_ai"),
+        prompt_registry=registry,
+    )
 
     assert isinstance(provider, LocalAIProvider)
 
@@ -97,6 +113,46 @@ def test_gemini_provider_posts_structured_request_and_parses_output() -> None:
     assert result.candidates[0].text == "AIで入力を再設計する。"
 
 
+def test_gemini_provider_masks_protected_input_and_restores_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode("utf-8")
+        assert "dedodamu" not in payload
+        assert "English" not in payload
+        assert "tokiori" not in payload
+        assert "__UTTATE_PROTECTED_0__" in payload
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": (
+                                        '{"candidates":['
+                                        '{"label":"faithful","text":"__UTTATE_PROTECTED_0__と'
+                                        '__UTTATE_PROTECTED_1__と__UTTATE_PROTECTED_2__"}'
+                                        '],"uncertain":[]}'
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    provider = GeminiProvider(
+        api_key="dummy-1234567890",
+        model="gemini-test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = provider.convert("\\dedodamu\\ to =English= to $tokiori$")
+
+    assert result.candidates[0].text == "デドダムとEnglishとときおり"
+
+
 def test_gemini_provider_requires_api_key() -> None:
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         GeminiProvider(api_key="", model="gemini-test")
@@ -142,6 +198,35 @@ def test_openai_provider_posts_responses_request_and_parses_output() -> None:
     assert result.provider == "openai"
     assert result.model == "gpt-test"
     assert result.candidates[0].text == "AIで入力を再設計する。"
+
+
+def test_openai_provider_masks_protected_input_and_restores_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode("utf-8")
+        assert "dedodamu" not in payload
+        assert "English" not in payload
+        assert "tokiori" not in payload
+        assert "__UTTATE_PROTECTED_0__" in payload
+        return httpx.Response(
+            200,
+            json={
+                "output_text": (
+                    '{"candidates":[{"label":"faithful","text":"'
+                    "__UTTATE_PROTECTED_0__と__UTTATE_PROTECTED_1__と"
+                    '__UTTATE_PROTECTED_2__"}],"uncertain":[]}'
+                )
+            },
+        )
+
+    provider = OpenAIProvider(
+        api_key="dummy-openai",
+        model="gpt-test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = provider.convert("\\dedodamu\\ to =English= to $tokiori$")
+
+    assert result.candidates[0].text == "デドダムとEnglishとときおり"
 
 
 def test_openai_provider_requires_api_key() -> None:

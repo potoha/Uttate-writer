@@ -85,6 +85,26 @@ def test_env_file_maps_legacy_lmstudio_to_local_ai_settings(tmp_path, monkeypatc
     assert settings.provider.compatible_model == "loaded-model"
 
 
+def test_env_file_maps_removed_mock_provider_to_local_ai(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("UTTATE_PROVIDER=mock\n", encoding="utf-8")
+
+    settings = load_settings(tmp_path / "missing.json", env_path=env_path)
+
+    assert settings.provider.type == "local_ai"
+
+
+def test_settings_file_maps_removed_mock_provider_to_local_ai(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("UTTATE_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"provider": {"type": "mock"}}), encoding="utf-8")
+
+    settings = load_settings(settings_path, env_path=tmp_path / ".env")
+
+    assert settings.provider.type == "local_ai"
+
+
 def test_settings_round_trip(tmp_path) -> None:
     settings_path = tmp_path / "nested" / "settings.json"
     expected = AppSettings(
@@ -144,6 +164,3 @@ def test_non_positive_provider_timeout_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="positive number"):
         load_settings(settings_path, env_path=tmp_path / ".env")
-
-
-

@@ -10,7 +10,6 @@ from uttate.addons.dataset_curator import load_candidates
 from uttate.config import AppSettings, DatasetCaptureSettings, ProviderSettings
 from uttate.models import ChunkStatus
 from uttate.providers.base import Candidate, ProviderResult
-from uttate.providers.mock import MockProvider
 from uttate.ui.main_window import ConsoleMode, MainWindow
 
 
@@ -46,6 +45,30 @@ class FailingProvider:
         raise RuntimeError(f"cannot convert {raw_text}")
 
 
+class DeterministicProvider:
+    def __init__(self, *, delay_seconds: float = 0) -> None:
+        self.delay_seconds = delay_seconds
+
+    def convert(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> ProviderResult:
+        del previous_context
+        if self.delay_seconds:
+            time.sleep(self.delay_seconds)
+        return ProviderResult(
+            candidates=(
+                Candidate("faithful", f"変換候補A: {raw_text}"),
+                Candidate("natural", f"変換候補B: {raw_text}"),
+            )[:candidate_count],
+            provider="test",
+            model="test",
+        )
+
+
 def submit(qtbot, window: MainWindow, text: str) -> None:
     window.input_panel.editor.setPlainText(text)
     qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_Return)
@@ -56,7 +79,7 @@ def wait_until_idle(qtbot, window: MainWindow) -> None:
 
 
 def test_enter_commits_multiple_chunks_without_waiting(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0.12), max_workers=2)
+    window = MainWindow(DeterministicProvider(delay_seconds=0.12), max_workers=2)
     qtbot.addWidget(window)
     window.show()
 
@@ -78,7 +101,7 @@ def test_enter_commits_multiple_chunks_without_waiting(qtbot) -> None:
 
 
 def test_empty_input_is_not_committed(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
 
     submit(qtbot, window, "  \n\t")
@@ -88,7 +111,7 @@ def test_empty_input_is_not_committed(qtbot) -> None:
 
 
 def test_shift_enter_inserts_newline_without_committing(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.input_panel.editor.setPlainText("line one")
     window.input_panel.editor.moveCursor(QTextCursor.MoveOperation.End)
@@ -104,7 +127,7 @@ def test_shift_enter_inserts_newline_without_committing(qtbot) -> None:
 
 
 def test_space_inserts_boundary_and_shift_space_inserts_real_space(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     editor = window.input_panel.editor
     editor.setFocus()
@@ -137,19 +160,19 @@ def test_out_of_order_results_update_the_matching_chunk(qtbot) -> None:
 
 
 def test_selected_chunk_review_refreshes_after_conversion(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0.01))
+    window = MainWindow(DeterministicProvider(delay_seconds=0.01))
     qtbot.addWidget(window)
 
     submit(qtbot, window, "review me")
     wait_until_idle(qtbot, window)
 
-    assert window.review_panel.status_label.text() == "Status: ready_for_review / mock:mock"
+    assert window.review_panel.status_label.text() == "Status: ready_for_review / test:test"
     assert window.review_panel.raw_field.toPlainText() == "review me"
     assert window.review_panel.candidate_1_field.toPlainText() == "変換候補A: review me"
 
 
 def test_main_window_starts_as_normal_bottom_band(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
 
     assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
@@ -167,7 +190,7 @@ def test_main_window_starts_as_normal_bottom_band(qtbot) -> None:
 
 
 def test_long_chunk_text_is_not_elided_and_review_fields_wrap(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     long_text = "nagai" * 24
 
@@ -185,7 +208,7 @@ def test_long_chunk_text_is_not_elided_and_review_fields_wrap(qtbot) -> None:
 
 
 def test_review_mode_enter_accepts_and_copies_selected_candidate(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -209,7 +232,7 @@ def test_review_mode_shift_enter_accepts_and_records_dataset_candidate(qtbot, tm
     settings = AppSettings(
         dataset=DatasetCaptureSettings(capture_enabled=True, capture_store_path=str(store))
     )
-    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
     window.show()
 
@@ -244,7 +267,7 @@ def test_review_mode_shift_enter_does_not_accept_when_capture_is_off(
     settings = AppSettings(
         dataset=DatasetCaptureSettings(capture_enabled=False, capture_store_path=str(store))
     )
-    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
     window.show()
 
@@ -264,7 +287,7 @@ def test_review_mode_shift_enter_does_not_accept_when_capture_is_off(
 
 
 def test_review_mode_space_can_select_second_candidate_before_accept(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -282,7 +305,7 @@ def test_review_mode_space_can_select_second_candidate_before_accept(qtbot) -> N
 
 
 def test_candidate_edit_enter_accepts_edited_text_and_restores_input(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -310,7 +333,7 @@ def test_candidate_edit_enter_accepts_edited_text_and_restores_input(qtbot) -> N
 
 
 def test_candidate_edit_escape_cancels_and_restores_input(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -331,7 +354,7 @@ def test_candidate_edit_escape_cancels_and_restores_input(qtbot) -> None:
 
 
 def test_candidate_edit_ctrl_enter_reconverts_and_restores_input(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -380,7 +403,7 @@ def test_review_mode_r_resends_error_chunk(qtbot) -> None:
     wait_until_idle(qtbot, window)
     assert window.document.chunks[0].status == ChunkStatus.FAILED
 
-    window.conversion_queue.set_provider(MockProvider(delay_seconds=0))
+    window.conversion_queue.set_provider(DeterministicProvider(delay_seconds=0))
     qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
     qtbot.keyClick(window.chunk_list, Qt.Key.Key_R)
     wait_until_idle(qtbot, window)
@@ -391,10 +414,8 @@ def test_review_mode_r_resends_error_chunk(qtbot) -> None:
 
 
 def test_provider_switch_updates_future_chunks(qtbot) -> None:
-    settings = AppSettings(
-        provider=ProviderSettings(type="openai", openai_api_key="dummy-openai")
-    )
-    window = MainWindow(MockProvider(delay_seconds=0), settings=settings)
+    settings = AppSettings(provider=ProviderSettings(type="openai", openai_api_key="dummy-openai"))
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
 
     window.provider_panel.provider_combo.setCurrentIndex(
@@ -406,7 +427,7 @@ def test_provider_switch_updates_future_chunks(qtbot) -> None:
 
 
 def test_settings_button_opens_key_settings_window(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
 
@@ -417,7 +438,7 @@ def test_settings_button_opens_key_settings_window(qtbot) -> None:
 
 
 def test_f12_opens_key_settings_window(qtbot) -> None:
-    window = MainWindow(MockProvider(delay_seconds=0))
+    window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
     window.show()
     window.input_panel.editor.setFocus()
@@ -426,6 +447,3 @@ def test_f12_opens_key_settings_window(qtbot) -> None:
 
     assert window._settings_window is not None
     assert window._settings_window.isVisible()
-
-
-

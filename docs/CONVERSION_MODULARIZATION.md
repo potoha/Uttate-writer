@@ -32,6 +32,7 @@ main branch のStage 1読み転写 logic は `uttate.conversion.local_ai` とし
 4. Gemini / OpenAI prompt は not-local direct flow + marker protection を維持する。
 
 `local_ai` は自然文候補A/Bではなく、Stage 1の忠実な読み転写を `faithful_reading` 候補として返す。
-`lmstudio` は設定互換用の旧名として `local_ai` へ寄せる。ユーザー向けの選択肢には出さない。`openai_compatible` は汎用互換API用の内部Providerとして維持する。
+`lmstudio` は設定互換用の旧名として `local_ai` へ寄せる。ユーザー向けの選択肢には出さない。
+OpenAI互換のHTTP通信実装は `local_ai` Provider内のJSON clientとして扱い、単独のProvider選択肢にはしない。
 
 

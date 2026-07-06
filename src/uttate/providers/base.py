@@ -70,4 +70,3 @@ class ConversionProvider(Protocol):
     ) -> ProviderResult:
         """Convert one raw chunk into reviewable candidates."""
         ...
-

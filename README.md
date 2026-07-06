@@ -94,10 +94,6 @@ LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
 LMSTUDIO_API_KEY=lm-studio
 LMSTUDIO_MODEL=
 
-OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:1234/v1
-OPENAI_COMPATIBLE_API_KEY=
-OPENAI_COMPATIBLE_MODEL=
-
 UTTATE_TIMEOUT_SECONDS=30
 UTTATE_PREVIOUS_CONTEXT_CHARS=600
 ```
@@ -107,7 +103,7 @@ UTTATE_PREVIOUS_CONTEXT_CHARS=600
 - 実APIキーをREADME、Issue、ログ、テストデータへ貼らないでください。
 - Gemini / OpenAIなどのAPI Providerを使う場合、入力テキストと直前文脈は選択したAPI事業者に送信されます。
 - APIキーはsettings.jsonへ保存せず、環境変数または `.env` から読み込みます。
-- `local_ai` はLM StudioのOpenAI互換APIを接続先として使います。既定では `http://127.0.0.1:1234/v1` を見ます。
+- UI上の選択肢は `Local AI` に一本化しています。`local_ai` はLM StudioのOpenAI互換APIを接続先として使い、既定では `http://127.0.0.1:1234/v1` を見ます。
 
 Geminiの設定例:
 

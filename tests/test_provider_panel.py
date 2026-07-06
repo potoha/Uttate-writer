@@ -10,6 +10,19 @@ def test_provider_panel_shows_current_model(qtbot) -> None:
     assert panel.model_label.text() == "Model: gemini-test"
 
 
+def test_provider_panel_exposes_only_user_facing_providers(qtbot) -> None:
+    panel = ProviderPanel(ProviderSettings())
+    qtbot.addWidget(panel)
+
+    provider_ids = [
+        panel.provider_combo.itemData(index) for index in range(panel.provider_combo.count())
+    ]
+
+    assert provider_ids == ["local_ai", "openai", "gemini"]
+    assert "lmstudio" not in provider_ids
+    assert "mock" not in provider_ids
+
+
 def test_provider_panel_emits_selected_provider(qtbot) -> None:
     panel = ProviderPanel(ProviderSettings())
     qtbot.addWidget(panel)

@@ -6,9 +6,7 @@ from uttate.providers.base import Candidate, ProviderResult
 from uttate.providers.factory import create_conversion_provider
 from uttate.providers.gemini import GeminiProvider
 from uttate.providers.local_ai import LocalAIProvider
-from uttate.providers.mock import MockProvider
 from uttate.providers.openai import OpenAIProvider
-from uttate.providers.openai_compatible import OpenAICompatibleProvider
 
 
 def test_provider_result_requires_at_least_one_candidate() -> None:
@@ -21,23 +19,14 @@ def test_candidate_rejects_empty_text() -> None:
         Candidate("faithful", "")
 
 
-def test_mock_provider_returns_project_b_candidates() -> None:
-    result = MockProvider(delay_seconds=0).convert("AIdenyuuryokuwosaisekkeisuru.")
-
-    assert result.provider == "mock"
-    assert [candidate.label for candidate in result.candidates] == ["faithful", "natural"]
-    assert result.candidates[0].text == "AIで入力を再設計する。"
-
-
-def test_mock_provider_applies_protected_input_tags() -> None:
-    result = MockProvider(delay_seconds=0).convert("\\dedodamu\\ to =English= to $tokiori$")
-
-    assert result.candidates[0].text == "変換候補A: デドダム to English to ときおり"
-
-
 def test_factory_keeps_unimplemented_api_providers_explicit() -> None:
     with pytest.raises(ValueError, match="Unsupported provider"):
         create_conversion_provider(ProviderSettings(type="missing"))
+
+
+def test_factory_rejects_removed_mock_provider() -> None:
+    with pytest.raises(ValueError, match="Unsupported provider"):
+        create_conversion_provider(ProviderSettings(type="mock"))
 
 
 def test_factory_creates_gemini_provider() -> None:
@@ -60,12 +49,6 @@ def test_factory_creates_local_ai_provider() -> None:
     provider = create_conversion_provider(ProviderSettings(type="local_ai"))
 
     assert isinstance(provider, LocalAIProvider)
-
-
-def test_factory_creates_openai_compatible_provider() -> None:
-    provider = create_conversion_provider(ProviderSettings(type="openai_compatible"))
-
-    assert isinstance(provider, OpenAICompatibleProvider)
 
 
 def test_gemini_provider_posts_structured_request_and_parses_output() -> None:
@@ -164,77 +147,3 @@ def test_openai_provider_posts_responses_request_and_parses_output() -> None:
 def test_openai_provider_requires_api_key() -> None:
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         OpenAIProvider(api_key="", model="gpt-test")
-
-
-def test_openai_compatible_provider_posts_chat_completion() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == "http://local.test/v1/chat/completions"
-        assert request.headers["authorization"] == "Bearer compat-key"
-        payload = request.read().decode("utf-8")
-        assert "local-model" in payload
-        assert "response_format" in payload
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"candidates":[{"label":"faithful","text":"本文"}],"uncertain":[]}'
-                            )
-                        }
-                    }
-                ]
-            },
-        )
-
-    provider = OpenAICompatibleProvider(
-        base_url="http://local.test/v1",
-        api_key="compat-key",
-        model="local-model",
-        provider_name="openai_compatible",
-        transport=httpx.MockTransport(handler),
-    )
-
-    result = provider.convert("rough")
-
-    assert result.provider == "openai_compatible"
-    assert result.model == "local-model"
-    assert result.candidates[0].text == "本文"
-
-
-def test_openai_compatible_provider_auto_detects_model() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [{"id": "loaded-model"}]})
-        assert request.url.path.endswith("/chat/completions")
-        assert '"model":"loaded-model"' in request.read().decode("utf-8")
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"candidates":[{"label":"faithful","text":"本文"}],"uncertain":[]}'
-                            )
-                        }
-                    }
-                ]
-            },
-        )
-
-    provider = OpenAICompatibleProvider(
-        base_url="http://local.test/v1",
-        api_key="",
-        model="",
-        provider_name="openai_compatible",
-        transport=httpx.MockTransport(handler),
-    )
-
-    result = provider.convert("rough")
-
-    assert result.model == "loaded-model"
-
-
-

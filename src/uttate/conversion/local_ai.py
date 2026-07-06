@@ -761,5 +761,3 @@ def _is_kanji(character: str) -> bool:
 
 def _is_punctuation(character: str) -> bool:
     return unicodedata.category(character).startswith("P")
-
-

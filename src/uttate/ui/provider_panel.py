@@ -70,8 +70,6 @@ def _model_label(settings: ProviderSettings) -> str:
         return settings.gemini_model
     if settings.type == "openai":
         return settings.openai_model
-    if settings.type in {"local_ai", "openai_compatible"}:
+    if settings.type == "local_ai":
         return settings.compatible_model or "auto-detect"
     return "local_ai"
-
-

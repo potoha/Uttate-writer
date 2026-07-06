@@ -5,7 +5,6 @@ from uttate.providers.base import ConversionProvider
 from uttate.providers.gemini import GeminiProvider
 from uttate.providers.local_ai import LocalAIProvider
 from uttate.providers.openai import OpenAIProvider
-from uttate.providers.openai_compatible import OpenAICompatibleProvider
 
 
 def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider:
@@ -31,16 +30,4 @@ def create_conversion_provider(settings: ProviderSettings) -> ConversionProvider
             model=settings.compatible_model,
             timeout_seconds=settings.timeout_seconds,
         )
-    if settings.type == "openai_compatible":
-        return OpenAICompatibleProvider(
-            base_url=settings.compatible_base_url,
-            api_key=settings.compatible_api_key,
-            model=settings.compatible_model,
-            provider_name=settings.type,
-            timeout_seconds=settings.timeout_seconds,
-            reasoning_effort=None,
-        )
     raise ValueError(f"Unsupported provider type: {settings.type}")
-
-
-

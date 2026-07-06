@@ -4,16 +4,16 @@ from collections.abc import Sequence
 
 from uttate.app import create_application
 from uttate.config import load_settings
-from uttate.pipeline.normalizer import ReadingNormalizationProvider, ReadingNormalizer
-from uttate.providers.factory import create_llm_provider
+from uttate.logging_config import configure_logging
+from uttate.providers.factory import create_conversion_provider
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run Uttate Writer."""
 
+    configure_logging()
     settings = load_settings()
-    llm_provider = create_llm_provider(settings.provider)
-    conversion_provider = ReadingNormalizationProvider(ReadingNormalizer(llm_provider))
-    application, window = create_application(argv, conversion_provider)
+    conversion_provider = create_conversion_provider(settings.provider)
+    application, window = create_application(argv, conversion_provider, settings=settings)
     window.show()
     return application.exec()

@@ -1,31 +1,37 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
 import httpx
 
+from uttate.conversion.local_ai import (
+    LocalAILLMProvider,
+    ReadingNormalizationProvider,
+    ReadingNormalizer,
+)
 from uttate.models import JsonObject
-from uttate.providers.base import LLMProvider
+from uttate.providers.base import ProviderResult
 
 
-class LLMProviderError(RuntimeError):
-    """Base error for user-visible provider failures."""
+class LocalAIProviderError(RuntimeError):
+    """Base error for user-visible local AI provider failures."""
 
 
-class ProviderConnectionError(LLMProviderError):
+class ProviderConnectionError(LocalAIProviderError):
     """The configured provider could not be reached."""
 
 
-class ProviderTimeoutError(LLMProviderError):
+class ProviderTimeoutError(LocalAIProviderError):
     """The provider did not respond before the configured timeout."""
 
 
-class ProviderResponseError(LLMProviderError):
+class ProviderResponseError(LocalAIProviderError):
     """The provider returned an HTTP or response-format error."""
 
 
-class OpenAICompatibleProvider(LLMProvider):
+class OpenAICompatibleJSONClient(LocalAILLMProvider):
     """Structured JSON client for OpenAI-compatible chat-completion servers."""
 
     def __init__(
@@ -153,6 +159,123 @@ class OpenAICompatibleProvider(LLMProvider):
         if not isinstance(content, str) or not content.strip():
             raise ProviderResponseError("The assistant message content was empty.")
         return _strip_json_fence(content.strip())
+
+
+class LMStudioJSONClient(OpenAICompatibleJSONClient):
+    """LM Studio preset using its local OpenAI-compatible endpoint."""
+
+    def __init__(
+        self,
+        *,
+        model: str = "",
+        base_url: str = "http://127.0.0.1:1234/v1",
+        api_key: str = "lm-studio",
+        timeout_seconds: float = 60.0,
+        reasoning_effort: str | None = "none",
+        max_tokens: int = 2048,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._auto_detect_model = not model.strip()
+        self._model_lock = threading.Lock()
+        super().__init__(
+            base_url=base_url,
+            api_key=api_key,
+            model=model or "__auto_detect__",
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            max_tokens=max_tokens,
+            transport=transport,
+        )
+
+    def complete_json(
+        self,
+        messages: list[JsonObject],
+        schema: JsonObject | None = None,
+    ) -> JsonObject:
+        if self._auto_detect_model:
+            with self._model_lock:
+                if self._auto_detect_model:
+                    self.model = self._discover_loaded_model()
+                    self._auto_detect_model = False
+        return super().complete_json(messages, schema)
+
+    def _discover_loaded_model(self) -> str:
+        try:
+            with self._create_client() as client:
+                response = client.get("models")
+                response.raise_for_status()
+        except httpx.TimeoutException as error:
+            raise ProviderTimeoutError(
+                f"LM Studio model discovery timed out after {self.timeout_seconds:g} seconds."
+            ) from error
+        except httpx.HTTPStatusError as error:
+            raise ProviderResponseError(
+                f"LM Studio model discovery returned HTTP {error.response.status_code}."
+            ) from error
+        except httpx.RequestError as error:
+            raise ProviderConnectionError(
+                f"Could not connect to LM Studio at {self.base_url}"
+            ) from error
+
+        try:
+            response_data = response.json()
+            model_ids = [
+                item["id"]
+                for item in response_data["data"]
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProviderResponseError("LM Studio returned an invalid model list.") from error
+        if not model_ids:
+            raise ProviderResponseError("LM Studio has no loaded model.")
+        return model_ids[0]
+
+
+class LocalAIProvider(ReadingNormalizationProvider):
+    """Project B provider adapter for the main-derived local Stage 1 normalizer."""
+
+    name = "local_ai"
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "http://127.0.0.1:1234/v1",
+        api_key: str = "lm-studio",
+        model: str = "",
+        timeout_seconds: float = 60.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        client = LMStudioJSONClient(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.client = client
+        super().__init__(ReadingNormalizer(client))
+
+    def convert(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> ProviderResult:
+        result = super().convert(
+            raw_text,
+            previous_context=previous_context,
+            candidate_count=candidate_count,
+        )
+        model = self.client.model if not self.client.model.startswith("__") else ""
+        return ProviderResult(
+            candidates=result.candidates,
+            uncertain=result.uncertain,
+            provider=self.name,
+            model=model,
+            raw_response=result.raw_response,
+            usage=result.usage,
+        )
 
 
 def _strip_json_fence(content: str) -> str:

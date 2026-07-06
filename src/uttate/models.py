@@ -13,13 +13,12 @@ class ChunkStatus(StrEnum):
     """Lifecycle states for one rough-input chunk."""
 
     RAW = "raw"
-    NORMALIZING = "normalizing"
-    NORMALIZED = "normalized"
-    RETRIEVING_DICTIONARY = "retrieving_dictionary"
+    QUEUED = "queued"
     CONVERTING = "converting"
     READY_FOR_REVIEW = "ready_for_review"
     ADOPTED = "adopted"
     EDITED = "edited"
+    REJECTED = "rejected"
     FAILED = "failed"
 
 
@@ -40,30 +39,35 @@ class Chunk:
 
     raw_text: str
     id: str = field(default_factory=lambda: str(uuid4()))
-    normalized: str | None = None
-    segments: list[JsonObject] = field(default_factory=list)
-    dictionary_candidates: list[JsonObject] = field(default_factory=list)
     candidate_1: str | None = None
     candidate_2: str | None = None
     adopted_text: str | None = None
     uncertain: list[JsonObject] = field(default_factory=list)
+    provider: str | None = None
+    model: str | None = None
     status: ChunkStatus = ChunkStatus.RAW
     error_message: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
     _ALLOWED_TRANSITIONS: ClassVar[dict[ChunkStatus, frozenset[ChunkStatus]]] = {
-        ChunkStatus.RAW: frozenset({ChunkStatus.NORMALIZING}),
-        ChunkStatus.NORMALIZING: frozenset({ChunkStatus.NORMALIZED, ChunkStatus.FAILED}),
-        ChunkStatus.NORMALIZED: frozenset({ChunkStatus.RETRIEVING_DICTIONARY, ChunkStatus.FAILED}),
-        ChunkStatus.RETRIEVING_DICTIONARY: frozenset({ChunkStatus.CONVERTING, ChunkStatus.FAILED}),
+        ChunkStatus.RAW: frozenset({ChunkStatus.QUEUED}),
+        ChunkStatus.QUEUED: frozenset({ChunkStatus.CONVERTING, ChunkStatus.FAILED}),
         ChunkStatus.CONVERTING: frozenset({ChunkStatus.READY_FOR_REVIEW, ChunkStatus.FAILED}),
         ChunkStatus.READY_FOR_REVIEW: frozenset(
-            {ChunkStatus.ADOPTED, ChunkStatus.EDITED, ChunkStatus.NORMALIZING}
+            {
+                ChunkStatus.ADOPTED,
+                ChunkStatus.EDITED,
+                ChunkStatus.REJECTED,
+                ChunkStatus.QUEUED,
+            }
         ),
-        ChunkStatus.ADOPTED: frozenset({ChunkStatus.EDITED, ChunkStatus.NORMALIZING}),
-        ChunkStatus.EDITED: frozenset({ChunkStatus.ADOPTED, ChunkStatus.NORMALIZING}),
-        ChunkStatus.FAILED: frozenset({ChunkStatus.NORMALIZING}),
+        ChunkStatus.ADOPTED: frozenset({ChunkStatus.EDITED, ChunkStatus.QUEUED}),
+        ChunkStatus.EDITED: frozenset(
+            {ChunkStatus.ADOPTED, ChunkStatus.REJECTED, ChunkStatus.QUEUED}
+        ),
+        ChunkStatus.REJECTED: frozenset({ChunkStatus.QUEUED}),
+        ChunkStatus.FAILED: frozenset({ChunkStatus.REJECTED, ChunkStatus.QUEUED}),
     }
 
     def __post_init__(self) -> None:
@@ -126,6 +130,19 @@ class Chunk:
         else:
             self.updated_at = self._validated_update_time(at)
         self.adopted_text = text
+
+    def reject(self, *, at: float | None = None) -> None:
+        """Keep the chunk in history while marking it unusable for approval."""
+
+        if self.status not in {
+            ChunkStatus.READY_FOR_REVIEW,
+            ChunkStatus.EDITED,
+            ChunkStatus.FAILED,
+        }:
+            raise InvalidStatusTransition(
+                f"Cannot reject chunk {self.id} while it is {self.status}."
+            )
+        self.transition_to(ChunkStatus.REJECTED, at=at)
 
     def export_text(self, fallback: ExportFallback = ExportFallback.CANDIDATE_1) -> str:
         """Return the chunk text using the configured unresolved fallback."""

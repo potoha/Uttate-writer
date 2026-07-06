@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.spec
 
 # Local environments managed by uv
 .venv/
@@ -16,8 +17,17 @@ build/
 .coverage
 htmlcov/
 .artifacts/
+logs/
+*.log
+data/sft/
+data/datasets/
+data/candidates*.jsonl
+data/seeds.private.jsonl
 
 # Local application data and secrets
+.env
+.env.*
+!.env.example
 settings.json
 *.sqlite
 *.sqlite3

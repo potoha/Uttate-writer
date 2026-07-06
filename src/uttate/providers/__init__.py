@@ -1,15 +1,23 @@
 """Conversion provider interfaces and implementations."""
 
-from uttate.providers.base import ConversionProvider, ConversionResult, LLMProvider
-from uttate.providers.lmstudio import LMStudioProvider
-from uttate.providers.mock import MockProvider
-from uttate.providers.openai_compatible import OpenAICompatibleProvider
+from uttate.providers.base import (
+    Candidate,
+    ConversionProvider,
+    ProviderError,
+    ProviderResult,
+    ProviderUsage,
+)
+from uttate.providers.gemini import GeminiProvider
+from uttate.providers.local_ai import LocalAIProvider
+from uttate.providers.openai import OpenAIProvider
 
 __all__ = [
+    "Candidate",
     "ConversionProvider",
-    "ConversionResult",
-    "LLMProvider",
-    "LMStudioProvider",
-    "MockProvider",
-    "OpenAICompatibleProvider",
+    "GeminiProvider",
+    "LocalAIProvider",
+    "OpenAIProvider",
+    "ProviderError",
+    "ProviderResult",
+    "ProviderUsage",
 ]

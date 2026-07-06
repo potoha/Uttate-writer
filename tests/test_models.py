@@ -10,13 +10,7 @@ from uttate.models import (
 
 
 def advance_to_review(chunk: Chunk) -> None:
-    for status in (
-        ChunkStatus.NORMALIZING,
-        ChunkStatus.NORMALIZED,
-        ChunkStatus.RETRIEVING_DICTIONARY,
-        ChunkStatus.CONVERTING,
-        ChunkStatus.READY_FOR_REVIEW,
-    ):
+    for status in (ChunkStatus.QUEUED, ChunkStatus.CONVERTING, ChunkStatus.READY_FOR_REVIEW):
         chunk.transition_to(status)
 
 
@@ -24,11 +18,11 @@ def test_chunk_defaults_to_raw_with_independent_collections() -> None:
     first = Chunk("first")
     second = Chunk("second")
 
-    first.segments.append({"reading": "first"})
+    first.uncertain.append({"raw": "first", "reason": "example"})
 
     assert first.status == ChunkStatus.RAW
     assert first.id != second.id
-    assert second.segments == []
+    assert second.uncertain == []
 
 
 @pytest.mark.parametrize("raw_text", ["", " ", "\r\n\t"])
@@ -39,19 +33,13 @@ def test_chunk_rejects_blank_raw_text(raw_text: str) -> None:
 
 def test_chunk_can_follow_the_complete_conversion_path() -> None:
     chunk = Chunk("rough", created_at=1.0, updated_at=1.0)
-    path = (
-        ChunkStatus.NORMALIZING,
-        ChunkStatus.NORMALIZED,
-        ChunkStatus.RETRIEVING_DICTIONARY,
-        ChunkStatus.CONVERTING,
-        ChunkStatus.READY_FOR_REVIEW,
-    )
+    path = (ChunkStatus.QUEUED, ChunkStatus.CONVERTING, ChunkStatus.READY_FOR_REVIEW)
 
     for timestamp, status in enumerate(path, start=2):
         chunk.transition_to(status, at=float(timestamp))
 
     assert chunk.status == ChunkStatus.READY_FOR_REVIEW
-    assert chunk.updated_at == 6.0
+    assert chunk.updated_at == 4.0
 
 
 def test_chunk_rejects_skipping_pipeline_states() -> None:
@@ -63,16 +51,16 @@ def test_chunk_rejects_skipping_pipeline_states() -> None:
 
 def test_processing_failure_can_retry_without_losing_text() -> None:
     chunk = Chunk("rough")
-    chunk.transition_to(ChunkStatus.NORMALIZING)
+    chunk.transition_to(ChunkStatus.QUEUED)
     chunk.mark_failed("provider unavailable")
 
     assert chunk.status == ChunkStatus.FAILED
     assert chunk.error_message == "provider unavailable"
     assert chunk.raw_text == "rough"
 
-    chunk.transition_to(ChunkStatus.NORMALIZING)
+    chunk.transition_to(ChunkStatus.QUEUED)
 
-    assert chunk.status == ChunkStatus.NORMALIZING
+    assert chunk.status == ChunkStatus.QUEUED
     assert chunk.error_message is None
 
 
@@ -114,9 +102,9 @@ def test_reconversion_preserves_last_adopted_text() -> None:
     advance_to_review(chunk)
     chunk.adopt("採用済み")
 
-    chunk.transition_to(ChunkStatus.NORMALIZING)
+    chunk.transition_to(ChunkStatus.QUEUED)
 
-    assert chunk.status == ChunkStatus.NORMALIZING
+    assert chunk.status == ChunkStatus.QUEUED
     assert chunk.adopted_text == "採用済み"
     assert chunk.export_text() == "採用済み"
 
@@ -174,7 +162,7 @@ def test_timestamps_cannot_move_backwards() -> None:
     chunk = Chunk("rough", created_at=10.0, updated_at=10.0)
 
     with pytest.raises(ValueError, match="backwards"):
-        chunk.transition_to(ChunkStatus.NORMALIZING, at=9.0)
+        chunk.transition_to(ChunkStatus.QUEUED, at=9.0)
 
     assert chunk.status == ChunkStatus.RAW
     assert chunk.updated_at == 10.0

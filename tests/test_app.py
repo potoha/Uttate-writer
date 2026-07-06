@@ -1,4 +1,4 @@
-from uttate.app import MainWindow
+from uttate.ui.main_window import MainWindow
 
 
 def test_main_window_smoke(qtbot) -> None:

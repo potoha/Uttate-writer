@@ -7,6 +7,8 @@ name = "uttate-writer"
 version = "0.1.0"
 description = "AI-assisted Japanese rough-input editor"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "httpx>=0.28,<1",
@@ -15,6 +17,8 @@ dependencies = [
 
 [project.scripts]
 uttate = "uttate.main:main"
+uttate-dataset = "uttate.addons.dataset_builder:main"
+uttate-curate = "uttate.addons.dataset_curator:main"
 
 [dependency-groups]
 dev = [

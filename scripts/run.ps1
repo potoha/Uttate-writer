@@ -1,4 +1,4 @@
-.\scripts\test.ps1$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -8,7 +8,7 @@ $env:UV_PROJECT_ENVIRONMENT = Join-Path $projectRoot ".venv"
 
 Push-Location $projectRoot
 try {
-    uv run uttate
+    uv run --no-sync uttate
 } finally {
     Pop-Location
 }

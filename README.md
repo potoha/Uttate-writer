@@ -135,7 +135,7 @@ LMSTUDIO_MODEL=
 
 `LMSTUDIO_MODEL` が空の場合、Providerは `/v1/models` の先頭モデルを自動検出します。
 
-`local_ai` は、まずローマ字からかなへの正規化を機械的に行い、その後、必要な場合だけ曖昧な読みの候補選択と漢字かな交じり文への変換にLM Studio互換APIのローカルモデルを使います。Stage 2まで成功した場合は `faithful` / `natural` の自然文候補を返し、モデル応答が壊れた場合でも `mechanical_normalized` 候補として機械正規化結果を表示します。
+`local_ai` は、まずローマ字からかなへの正規化を機械的に行い、その後、必要な場合だけ曖昧な読みの候補選択と漢字かな交じり文への変換にLM Studio互換APIのローカルモデルを使います。Stage 2では、英語やplaceholderを保護しつつ、明らかな名詞・動詞語幹・複合語などを積極的に漢字へ変換します。Stage 2まで成功した場合は `faithful` / `natural` の自然文候補を返し、モデル応答が壊れた場合でも `mechanical_normalized` 候補として機械正規化結果を表示します。
 
 API Providerへ送る前に、特殊タグで保護した文字列は `__UTTATE_PROTECTED_0__` のようなplaceholderへ置き換えます。タグ内の元文字列や変換後文字列はGemini / OpenAI / Local AIへ送らず、応答を検証した後にアプリ側で機械的に復元します。
 

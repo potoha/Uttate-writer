@@ -320,13 +320,30 @@ class Stage2Converter:
     ) -> ProviderResult:
         normalized = result.normalized_for_stage2
         payload = {
-            "task": "kanji_kana_conversion_from_normalized_reading",
+            "task": "aggressive_kanji_conversion_from_normalized_reading",
+            "conversion_stage": "stage2_kanji_conversion",
             "input_text": normalized,
             "normalized_input": normalized,
             "previous_context": previous_context.strip() or "(なし)",
             "candidate_count": candidate_count,
             "labels": ["faithful", "natural"],
             "protected_placeholders": _protected_placeholders(masked.masks),
+            "kanji_conversion_policy": {
+                "convert_common_nouns": True,
+                "convert_verb_stems": True,
+                "convert_adjective_stems": True,
+                "convert_sahen_nouns": True,
+                "convert_compound_words": True,
+                "convert_technical_terms": True,
+                "preserve_particles_in_hiragana": True,
+                "preserve_auxiliaries_in_hiragana": True,
+                "preserve_okurigana": True,
+                "preserve_english": True,
+                "preserve_placeholders": True,
+                "avoid_unnecessary_hiragana": True,
+                "do_not_add_meaning": True,
+                "keep_casual_style": True,
+            },
             "rules": {
                 "preserve_placeholders": True,
                 "do_not_translate_english_terms": True,

@@ -61,9 +61,11 @@ def test_local_ai_provider_runs_stage2_with_lmstudio_payload(tmp_path) -> None:
             "candidates",
             "uncertain",
         ]
-        assert user_payload["task"] == "kanji_kana_conversion_from_normalized_reading"
+        assert user_payload["task"] == "aggressive_kanji_conversion_from_normalized_reading"
+        assert user_payload["conversion_stage"] == "stage2_kanji_conversion"
         assert user_payload["input_text"] == "keyboard は ぶんぼうぐ"
         assert user_payload["normalized_input"] == "keyboard は ぶんぼうぐ"
+        assert user_payload["kanji_conversion_policy"]["avoid_unnecessary_hiragana"] is True
         assert "keyboardhabunbougu" not in payload["messages"][-1]["content"]
         return httpx.Response(
             200,
@@ -255,7 +257,7 @@ def test_stage2_uses_mechanical_normalized_input() -> None:
     normalizer.convert_to_provider_result("nihonngo")
 
     payload = json.loads(provider.messages[0][-1]["content"])
-    assert payload["task"] == "kanji_kana_conversion_from_normalized_reading"
+    assert payload["task"] == "aggressive_kanji_conversion_from_normalized_reading"
     assert payload["input_text"] == "にほんご"
     assert payload["normalized_input"] == "にほんご"
 
@@ -383,3 +385,133 @@ def test_local_ai_stage2_does_not_receive_raw_rough_input() -> None:
     assert "bennrina" not in payload_text
     assert "にほんご" in payload_text
     assert "べんりな" in payload_text
+
+
+def test_stage2_converts_common_nouns_to_kanji() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "今日はlocal AIの変換精度を確かめる。"},
+                {"label": "natural", "text": "今日はlocal AIの変換精度を確かめる。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result(
+        "きょうは | local AI の | へんかんせいどを | たしかめる"
+    )
+
+    assert result.candidates[0].text == "今日はlocal AIの変換精度を確かめる。"
+    assert "きょう" not in result.candidates[0].text
+    assert "へんかんせいど" not in result.candidates[0].text
+    assert "たしかめる" not in result.candidates[0].text
+
+
+def test_stage2_converts_verb_and_adjective_stems() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "このtoolは入力のstressを減らす。"},
+                {"label": "natural", "text": "このtoolは入力のstressを減らす。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result(
+        "この | tool は | にゅうりょくの | stress を | へらす"
+    )
+
+    assert result.candidates[0].text == "このtoolは入力のstressを減らす。"
+
+
+def test_stage2_avoids_unnecessary_hiragana() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "変換結果をUIに表示する。"},
+                {"label": "natural", "text": "変換結果をUIに表示する。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result("へんかんけっかを | UI に | ひょうじする")
+
+    assert result.candidates[0].text == "変換結果をUIに表示する。"
+    assert "へんかんけっか" not in result.candidates[0].text
+    assert "ひょうじ" not in result.candidates[0].text
+
+
+def test_stage2_preserves_placeholders_while_converting_surrounding_japanese() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {
+                    "label": "faithful",
+                    "text": (
+                        "日本語変換__UTTATE_PROTECTED_0__、これは便利な"
+                        "__UTTATE_PROTECTED_1__だね。"
+                    ),
+                },
+                {
+                    "label": "natural",
+                    "text": (
+                        "日本語変換__UTTATE_PROTECTED_0__、これは便利な"
+                        "__UTTATE_PROTECTED_1__だね。"
+                    ),
+                },
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result(
+        "にほんご | へんかん | =tool= | これは | べんりな | \\siromono\\ | だね."
+    )
+
+    assert result.candidates[0].text == "日本語変換tool、これは便利なシロモノだね。"
+
+
+def test_stage2_does_not_add_meaning_while_converting_kanji() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "今の仕様だとユーザーの入力をそのまま扱える。"},
+                {"label": "natural", "text": "今の仕様だとユーザーの入力をそのまま扱える。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result(
+        "いまの | しようだと | ゆーざーの | にゅうりょくを | そのまま | あつかえる"
+    )
+
+    assert result.candidates[0].text == "今の仕様だとユーザーの入力をそのまま扱える。"
+    assert "内容" not in result.candidates[0].text
+    assert "安全" not in result.candidates[0].text
+
+
+def test_stage2_keeps_casual_style() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "これは便利だね。"},
+                {"label": "natural", "text": "これは便利だね。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result("これは | べんりだね")
+
+    assert result.candidates[0].text == "これは便利だね。"
+    assert "です" not in result.candidates[0].text

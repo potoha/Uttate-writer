@@ -75,7 +75,7 @@ Local AI は、LLM に rough input 全文の reading を生成させません。
 4. Stage 1: `MechanicalReadingNormalizer` が masked text を完全被覆する `segment_plan` / `segments` を作り、読めるローマ字をかなへ変換する。
 5. Stage 1 では `mechanical_strict` / `mechanical_typo_tolerant` は補助情報ではなく primary path の一部として扱う。高信頼で読める語は正規化し、低信頼の語は raw を保持して `suspicious_spans` に記録する。
 6. Stage 1.5: `ambiguous_spans` がある場合だけ、LM Studio互換APIへ候補選択 payload を送る。LLM は全文を書き換えず、提示された候補から選ぶだけ。
-7. Stage 2: Stage 1 / 1.5 の `mechanical_normalized` または `resolved_normalized` を、かな・英語混じり入力として LM Studio互換APIへ送る。
+7. Stage 2: Stage 1 / 1.5 の `mechanical_normalized` または `resolved_normalized` を、かな・英語混じり入力として LM Studio互換APIへ送る。Stage 2 は読み転写ではなく、明らかな名詞・動詞語幹・形容詞語幹・サ変名詞・複合語・技術用語を積極的に漢字化する漢字変換段階。
 8. Stage 2 の返答JSONを `ProviderResult` に変換し、placeholderを復元する。
 9. Stage 2 が失敗、invalid JSON、placeholder欠落、空候補などになった場合でも provider error だけにせず、`mechanical_normalized` を `mechanical_normalized` 候補として表示する。
 
@@ -154,11 +154,28 @@ Stage 2 に送る payload 例:
 
 ```json
 {
-  "task": "kanji_kana_conversion_from_normalized_reading",
+  "task": "aggressive_kanji_conversion_from_normalized_reading",
+  "conversion_stage": "stage2_kanji_conversion",
   "input_text": "にほんご | へんかん | __UTTATE_PROTECTED_0__ | これは | べんりな | __UTTATE_PROTECTED_1__ | だね.",
   "normalized_input": "にほんご | へんかん | __UTTATE_PROTECTED_0__ | これは | べんりな | __UTTATE_PROTECTED_1__ | だね.",
   "candidate_count": 2,
   "labels": ["faithful", "natural"],
+  "kanji_conversion_policy": {
+    "convert_common_nouns": true,
+    "convert_verb_stems": true,
+    "convert_adjective_stems": true,
+    "convert_sahen_nouns": true,
+    "convert_compound_words": true,
+    "convert_technical_terms": true,
+    "preserve_particles_in_hiragana": true,
+    "preserve_auxiliaries_in_hiragana": true,
+    "preserve_okurigana": true,
+    "preserve_english": true,
+    "preserve_placeholders": true,
+    "avoid_unnecessary_hiragana": true,
+    "do_not_add_meaning": true,
+    "keep_casual_style": true
+  },
   "protected_placeholders": [
     {
       "placeholder": "__UTTATE_PROTECTED_0__",
@@ -187,7 +204,7 @@ Stage 2 から期待する返答:
 }
 ```
 
-Stage 2 では、placeholder を一字一句そのまま保持すること、候補テキストが空でないこと、markdown fence や前置きがあっても JSON object を抽出できることを確認します。復元後のUIにはplaceholderではなく、アプリ内部の復元結果が表示されます。
+Stage 2 では、placeholder と英語表記を保持しつつ、日本語部分は標準的な漢字かな英語交じり文へ変換します。助詞、助動詞、送り仮名、文末表現はひらがなでよく、入力にない意味、主語、目的語、説明は足しません。候補テキストが空でないこと、markdown fence や前置きがあっても JSON object を抽出できること、placeholder を壊していないことを確認します。復元後のUIにはplaceholderではなく、アプリ内部の復元結果が表示されます。
 
 Stage 2 の実行有無と fallback 理由は debug log で確認できます。
 

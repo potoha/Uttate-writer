@@ -2,30 +2,53 @@ import json
 
 import httpx
 
+from uttate.conversion.local_ai import ReadingNormalizer
+from uttate.models import JsonObject
 from uttate.prompts.registry import LocalAIPromptProfile, LocalAIPromptRegistry
 from uttate.providers.local_ai import LocalAIProvider
 
 
-def test_local_ai_provider_runs_stage_1_normalizer_with_lmstudio_payload(tmp_path) -> None:
-    requests: list[httpx.Request] = []
-    registry = LocalAIPromptRegistry(
+class RecordingProvider:
+    def __init__(self, response: JsonObject | Exception) -> None:
+        self.response = response
+        self.messages: list[list[JsonObject]] = []
+
+    def complete_json(
+        self,
+        messages: list[JsonObject],
+        schema: JsonObject | None = None,
+    ) -> JsonObject:
+        del schema
+        self.messages.append(messages)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def _registry(tmp_path, *, default_prompt: str = "default prompt") -> LocalAIPromptRegistry:
+    return LocalAIPromptRegistry(
         tmp_path / "local_ai_prompts.yaml",
         {
             "default": LocalAIPromptProfile(
                 name="default",
                 model="",
-                prompt="default prompt",
-                default_prompt_snapshot="default prompt",
+                prompt=default_prompt,
+                default_prompt_snapshot=default_prompt,
             ),
             "model_loaded-local": LocalAIPromptProfile(
                 name="model_loaded-local",
                 model="loaded-local",
                 prompt="loaded-local prompt",
-                default_prompt_snapshot="default prompt",
+                default_prompt_snapshot=default_prompt,
             ),
         },
-        default_prompt="default prompt",
+        default_prompt=default_prompt,
     )
+
+
+def test_local_ai_provider_runs_stage2_with_lmstudio_payload(tmp_path) -> None:
+    requests: list[httpx.Request] = []
+    registry = _registry(tmp_path)
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -34,19 +57,14 @@ def test_local_ai_provider_runs_stage_1_normalizer_with_lmstudio_payload(tmp_pat
         payload = json.loads(request.content)
         user_payload = json.loads(payload["messages"][-1]["content"])
         assert payload["model"] == "loaded-local"
-        assert payload["messages"][0]["content"] == "loaded-local prompt"
         assert payload["response_format"]["json_schema"]["schema"]["required"] == [
-            "source_echo",
-            "normalized",
-            "segments",
+            "candidates",
             "uncertain",
         ]
-        assert user_payload["original_raw"] == "keyboardhabunbougu"
-        assert user_payload["original_raw_masked"] == "keyboardhabunbougu"
-        assert user_payload["protected_placeholders"] == []
-        assert user_payload["preprocessed_segments"][0]["raw_masked"] == "keyboardhabunbougu"
-        assert "mechanical_strict" in user_payload["preprocessed_segments"][0]
-        assert "mechanical_typo_tolerant" in user_payload["preprocessed_segments"][0]
+        assert user_payload["task"] == "kanji_kana_conversion_from_normalized_reading"
+        assert user_payload["input_text"] == "keyboard は ぶんぼうぐ"
+        assert user_payload["normalized_input"] == "keyboard は ぶんぼうぐ"
+        assert "keyboardhabunbougu" not in payload["messages"][-1]["content"]
         return httpx.Response(
             200,
             json={
@@ -55,26 +73,14 @@ def test_local_ai_provider_runs_stage_1_normalizer_with_lmstudio_payload(tmp_pat
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "source_echo": "keyboardhabunbougu",
-                                    "normalized": "keyboard は ぶんぼうぐ",
-                                    "segments": [
+                                    "candidates": [
                                         {
-                                            "raw": "keyboard",
-                                            "reading": "keyboard",
-                                            "type": "english",
-                                            "confidence": 1.0,
+                                            "label": "faithful",
+                                            "text": "keyboardは文房具",
                                         },
                                         {
-                                            "raw": "ha",
-                                            "reading": "は",
-                                            "type": "particle",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": "bunbougu",
-                                            "reading": "ぶんぼうぐ",
-                                            "type": "noun",
-                                            "confidence": 1.0,
+                                            "label": "natural",
+                                            "text": "keyboardは文房具です",
                                         },
                                     ],
                                     "uncertain": [],
@@ -99,31 +105,14 @@ def test_local_ai_provider_runs_stage_1_normalizer_with_lmstudio_payload(tmp_pat
 
     assert result.provider == "local_ai"
     assert result.model == "loaded-local"
-    assert result.candidates[0].label == "faithful_reading"
-    assert result.candidates[0].text == "keyboard は ぶんぼうぐ"
+    assert result.candidates[0].label == "faithful"
+    assert result.candidates[0].text == "keyboardは文房具"
     assert [request.url.path for request in requests] == ["/v1/models", "/v1/chat/completions"]
 
 
-def test_local_ai_provider_masks_protected_tags_and_restores_after_validation(tmp_path) -> None:
-    registry = LocalAIPromptRegistry(
-        tmp_path / "local_ai_prompts.yaml",
-        {
-            "default": LocalAIPromptProfile(
-                name="default",
-                model="",
-                prompt="default prompt",
-                default_prompt_snapshot="default prompt",
-            ),
-            "model_loaded-local": LocalAIPromptProfile(
-                name="model_loaded-local",
-                model="loaded-local",
-                prompt="loaded-local prompt",
-                default_prompt_snapshot="default prompt",
-            ),
-        },
-        default_prompt="default prompt",
-    )
-    masked_source = "__UTTATE_PROTECTED_0__ ha __UTTATE_PROTECTED_1__ to __UTTATE_PROTECTED_2__"
+def test_local_ai_provider_masks_protected_tags_and_restores_stage2_result(tmp_path) -> None:
+    registry = _registry(tmp_path)
+    masked_source = "__UTTATE_PROTECTED_0__ は __UTTATE_PROTECTED_1__ に __UTTATE_PROTECTED_2__"
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):
@@ -134,8 +123,7 @@ def test_local_ai_provider_masks_protected_tags_and_restores_after_validation(tm
         assert "dedodamu" not in serialized_payload
         assert "English" not in serialized_payload
         assert "tokiori" not in serialized_payload
-        assert user_payload["original_raw"] == masked_source
-        assert user_payload["original_raw_masked"] == masked_source
+        assert user_payload["normalized_input"] == masked_source
         assert user_payload["protected_placeholders"] == [
             {
                 "placeholder": "__UTTATE_PROTECTED_0__",
@@ -167,67 +155,15 @@ def test_local_ai_provider_masks_protected_tags_and_restores_after_validation(tm
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "source_echo": masked_source,
-                                    "normalized": (
-                                        "__UTTATE_PROTECTED_0__ は "
-                                        "__UTTATE_PROTECTED_1__ と "
-                                        "__UTTATE_PROTECTED_2__"
-                                    ),
-                                    "segments": [
+                                    "candidates": [
                                         {
-                                            "raw": "__UTTATE_PROTECTED_0__",
-                                            "reading": "__UTTATE_PROTECTED_0__",
-                                            "type": "unknown",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": " ",
-                                            "reading": " ",
-                                            "type": "symbol",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": "ha",
-                                            "reading": "は",
-                                            "type": "particle",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": " ",
-                                            "reading": " ",
-                                            "type": "symbol",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": "__UTTATE_PROTECTED_1__",
-                                            "reading": "__UTTATE_PROTECTED_1__",
-                                            "type": "unknown",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": " ",
-                                            "reading": " ",
-                                            "type": "symbol",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": "to",
-                                            "reading": "と",
-                                            "type": "particle",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": " ",
-                                            "reading": " ",
-                                            "type": "symbol",
-                                            "confidence": 1.0,
-                                        },
-                                        {
-                                            "raw": "__UTTATE_PROTECTED_2__",
-                                            "reading": "__UTTATE_PROTECTED_2__",
-                                            "type": "unknown",
-                                            "confidence": 1.0,
-                                        },
+                                            "label": "faithful",
+                                            "text": (
+                                                "__UTTATE_PROTECTED_0__は"
+                                                "__UTTATE_PROTECTED_1__に"
+                                                "__UTTATE_PROTECTED_2__"
+                                            ),
+                                        }
                                     ],
                                     "uncertain": [],
                                 },
@@ -247,9 +183,9 @@ def test_local_ai_provider_masks_protected_tags_and_restores_after_validation(tm
         prompt_registry=registry,
     )
 
-    result = provider.convert("\\dedodamu\\ ha =English= to $tokiori$")
+    result = provider.convert("\\dedodamu\\ ha =English= ni $tokiori$")
 
-    assert result.candidates[0].text == "デドダム は English と ときおり"
+    assert result.candidates[0].text == "デドダムはEnglishにときおり"
 
 
 def test_local_ai_provider_auto_creates_profile_for_detected_model(tmp_path) -> None:
@@ -277,15 +213,8 @@ def test_local_ai_provider_auto_creates_profile_for_detected_model(tmp_path) -> 
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "source_echo": "ha",
-                                    "normalized": "は",
-                                    "segments": [
-                                        {
-                                            "raw": "ha",
-                                            "reading": "は",
-                                            "type": "particle",
-                                            "confidence": 1.0,
-                                        },
+                                    "candidates": [
+                                        {"label": "faithful", "text": "は"},
                                     ],
                                     "uncertain": [],
                                 },
@@ -309,3 +238,148 @@ def test_local_ai_provider_auto_creates_profile_for_detected_model(tmp_path) -> 
     assert registry.profile("model_new-local-model").model == "new-local-model"
     assert registry.profile("model_new-local-model").prompt == "default prompt"
     assert "new-local-model" in registry.path.read_text(encoding="utf-8")
+
+
+def test_stage2_uses_mechanical_normalized_input() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "日本語"},
+                {"label": "natural", "text": "日本語です"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    normalizer.convert_to_provider_result("nihonngo")
+
+    payload = json.loads(provider.messages[0][-1]["content"])
+    assert payload["task"] == "kanji_kana_conversion_from_normalized_reading"
+    assert payload["input_text"] == "にほんご"
+    assert payload["normalized_input"] == "にほんご"
+
+
+def test_stage2_failure_falls_back_to_mechanical_normalized() -> None:
+    normalizer = ReadingNormalizer(
+        RecordingProvider({"candidates": [], "uncertain": []}),
+        enable_ambiguity_resolver=False,
+    )
+
+    result = normalizer.convert_to_provider_result("nihonngo")
+
+    assert result.candidates[0].label == "mechanical_normalized"
+    assert result.candidates[0].text == "にほんご"
+
+
+def test_local_ai_does_not_error_on_fidelity_failure_path() -> None:
+    normalizer = ReadingNormalizer(
+        RecordingProvider(RuntimeError("old reading path exploded")),
+        enable_ambiguity_resolver=False,
+    )
+
+    result = normalizer.convert_to_provider_result("koreha")
+
+    assert result.candidates[0].text == "これは"
+
+
+def test_local_ai_calls_stage2_after_mechanical_normalization() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {
+                    "label": "faithful",
+                    "text": (
+                        "日本語変換__UTTATE_PROTECTED_0__、これは便利な"
+                        "__UTTATE_PROTECTED_1__だね。"
+                    ),
+                }
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    normalizer.convert_to_provider_result(
+        "nihonngo | henkan | =tool= | koreha | bennrina | \\siromono\\ | dane."
+    )
+
+    payload = json.loads(provider.messages[0][-1]["content"])
+    assert payload["input_text"] == (
+        "にほんご | へんかん | __UTTATE_PROTECTED_0__ | これは | べんりな | "
+        "__UTTATE_PROTECTED_1__ | だね."
+    )
+
+
+def test_local_ai_prefers_stage2_candidates_over_mechanical_fallback() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {"label": "faithful", "text": "日本語変換tool、これは便利なシロモノだね。"},
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result("nihonngo | henkan | koreha")
+
+    assert result.candidates[0].label == "faithful"
+    assert result.candidates[0].text == "日本語変換tool、これは便利なシロモノだね。"
+
+
+def test_local_ai_stage2_failure_falls_back_to_mechanical_normalized() -> None:
+    provider = RecordingProvider({"candidates": [], "uncertain": []})
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result("nihonngo | henkan")
+
+    assert result.candidates[0].label == "mechanical_normalized"
+    assert result.candidates[0].text == "にほんご | へんかん"
+
+
+def test_local_ai_stage2_preserves_and_restores_placeholders() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {
+                    "label": "faithful",
+                    "text": "日本語変換__UTTATE_PROTECTED_0__、便利な__UTTATE_PROTECTED_1__。",
+                }
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    result = normalizer.convert_to_provider_result("nihonngo | henkan | =tool= | \\siromono\\")
+
+    assert result.candidates[0].text == "日本語変換tool、便利なシロモノ。"
+
+
+def test_local_ai_stage2_does_not_receive_raw_rough_input() -> None:
+    provider = RecordingProvider(
+        {
+            "candidates": [
+                {
+                    "label": "faithful",
+                    "text": (
+                        "日本語変換__UTTATE_PROTECTED_0__、これは便利な"
+                        "__UTTATE_PROTECTED_1__だね。"
+                    ),
+                }
+            ],
+            "uncertain": [],
+        }
+    )
+    normalizer = ReadingNormalizer(provider, enable_ambiguity_resolver=False)
+
+    normalizer.convert_to_provider_result(
+        "nihonngo | henkan | =tool= | koreha | bennrina | \\siromono\\ | dane."
+    )
+
+    payload_text = provider.messages[0][-1]["content"]
+    assert "nihonngo" not in payload_text
+    assert "bennrina" not in payload_text
+    assert "にほんご" in payload_text
+    assert "べんりな" in payload_text

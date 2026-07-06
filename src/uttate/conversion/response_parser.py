@@ -119,7 +119,7 @@ def _parse_uncertain(value: Any) -> list[JsonObject]:
     for index, item in enumerate(value, start=1):
         if not isinstance(item, dict):
             raise ProviderError(f"Uncertain item {index} must be an object.")
-        raw = item.get("raw", "")
+        raw = item.get("raw", item.get("text", ""))
         reason = item.get("reason", "")
         candidates = item.get("candidates", [])
         if (

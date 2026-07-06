@@ -1,59 +1,39 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-import unicodedata
-from collections import Counter
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
-from typing import Any, Protocol
+from typing import Protocol
 
-from uttate.input_rules import MaskedProtectedInput, ProtectedMask, mask_protected_input
+from uttate.conversion.direct import restore_masked_provider_result
+from uttate.conversion.response_parser import parse_provider_result
+from uttate.input_rules import (
+    ROMAJI_TABLE,
+    MaskedProtectedInput,
+    ProtectedMask,
+    mask_protected_input,
+)
 from uttate.models import JsonObject
-from uttate.providers.base import Candidate, ProviderResult
+from uttate.providers.base import Candidate, ProviderError, ProviderResult
 
-READING_NORMALIZATION_SCHEMA: JsonObject = {
+LOGGER = logging.getLogger(__name__)
+
+AMBIGUITY_RESOLUTION_SCHEMA: JsonObject = {
     "type": "object",
     "properties": {
-        "source_echo": {"type": "string"},
-        "normalized": {
-            "type": "string",
-            "minLength": 1,
-            "description": (
-                "Faithful reading only. Never introduce kanji, punctuation, words, or meanings "
-                "that are absent from original_raw."
-            ),
-        },
-        "segments": {
+        "choices": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "raw": {"type": "string"},
-                    "reading": {
-                        "type": "string",
-                        "description": (
-                            "Reading of this raw span only; no translation, paraphrase, "
-                            "or added text."
-                        ),
-                    },
-                    "type": {
-                        "type": "string",
-                        "enum": [
-                            "kana",
-                            "english",
-                            "name_like",
-                            "unknown",
-                            "symbol",
-                            "particle",
-                            "verb",
-                            "noun",
-                        ],
-                    },
+                    "id": {"type": "number"},
+                    "reading": {"type": "string"},
+                    "type": {"type": "string"},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 },
-                "required": ["raw", "reading", "type", "confidence"],
+                "required": ["id", "reading", "type", "confidence"],
                 "additionalProperties": False,
             },
         },
@@ -62,28 +42,54 @@ READING_NORMALIZATION_SCHEMA: JsonObject = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "raw": {"type": "string"},
+                    "id": {"type": "number"},
                     "reason": {"type": "string"},
                 },
-                "required": ["raw", "reason"],
+                "required": ["id", "reason"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["source_echo", "normalized", "segments", "uncertain"],
+    "required": ["choices", "uncertain"],
     "additionalProperties": False,
 }
 
-_SEGMENT_TYPES = {
-    "kana",
-    "english",
-    "name_like",
-    "unknown",
-    "symbol",
-    "particle",
-    "verb",
-    "noun",
+LOCAL_AI_STAGE2_SCHEMA: JsonObject = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["label", "text"],
+                "additionalProperties": False,
+            },
+        },
+        "uncertain": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["text", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["candidates", "uncertain"],
+    "additionalProperties": False,
 }
+
+_PROTECTED_PLACEHOLDER_PATTERN = re.compile(r"__UTTATE_PROTECTED_\d+__")
+_SEGMENT_PATTERN = re.compile(r"__UTTATE_PROTECTED_\d+__|\s*\|\s*|[^\s|]+|\s+")
+_ASCII_WORD_PATTERN = re.compile(r"[A-Za-z]+")
+_ROMAJI_KEYS = tuple(sorted(ROMAJI_TABLE, key=len, reverse=True))
 
 _PARTICLE_READINGS = {
     "ha": "は",
@@ -100,239 +106,48 @@ _PARTICLE_READINGS = {
     "made": "まで",
     "yori": "より",
 }
-
-_ROMAJI_TOKEN_PATTERN = re.compile(r"[A-Za-z]+")
-_ROMAJI_SYLLABLES = tuple(
-    sorted(
-        {
-            "kya",
-            "kyu",
-            "kyo",
-            "sha",
-            "shu",
-            "sho",
-            "cha",
-            "chu",
-            "cho",
-            "nya",
-            "nyu",
-            "nyo",
-            "hya",
-            "hyu",
-            "hyo",
-            "mya",
-            "myu",
-            "myo",
-            "rya",
-            "ryu",
-            "ryo",
-            "gya",
-            "gyu",
-            "gyo",
-            "ja",
-            "ju",
-            "jo",
-            "bya",
-            "byu",
-            "byo",
-            "pya",
-            "pyu",
-            "pyo",
-            "tsa",
-            "tsi",
-            "tse",
-            "tso",
-            "shi",
-            "chi",
-            "tsu",
-            "fu",
-            "ji",
-            "ka",
-            "ki",
-            "ku",
-            "ke",
-            "ko",
-            "sa",
-            "su",
-            "se",
-            "so",
-            "ta",
-            "te",
-            "to",
-            "na",
-            "ni",
-            "nu",
-            "ne",
-            "no",
-            "ha",
-            "hi",
-            "he",
-            "ho",
-            "ma",
-            "mi",
-            "mu",
-            "me",
-            "mo",
-            "ya",
-            "yu",
-            "yo",
-            "ra",
-            "ri",
-            "ru",
-            "re",
-            "ro",
-            "wa",
-            "wo",
-            "ga",
-            "gi",
-            "gu",
-            "ge",
-            "go",
-            "za",
-            "zu",
-            "ze",
-            "zo",
-            "da",
-            "de",
-            "do",
-            "ba",
-            "bi",
-            "bu",
-            "be",
-            "bo",
-            "pa",
-            "pi",
-            "pu",
-            "pe",
-            "po",
-            "va",
-            "vi",
-            "vu",
-            "ve",
-            "vo",
-            "a",
-            "i",
-            "u",
-            "e",
-            "o",
-        },
-        key=len,
-        reverse=True,
-    )
-)
-
-_ROMAJI_TO_HIRAGANA = {
-    "kya": "きゃ",
-    "kyu": "きゅ",
-    "kyo": "きょ",
-    "sha": "しゃ",
-    "shu": "しゅ",
-    "sho": "しょ",
-    "cha": "ちゃ",
-    "chu": "ちゅ",
-    "cho": "ちょ",
-    "nya": "にゃ",
-    "nyu": "にゅ",
-    "nyo": "にょ",
-    "hya": "ひゃ",
-    "hyu": "ひゅ",
-    "hyo": "ひょ",
-    "mya": "みゃ",
-    "myu": "みゅ",
-    "myo": "みょ",
-    "rya": "りゃ",
-    "ryu": "りゅ",
-    "ryo": "りょ",
-    "gya": "ぎゃ",
-    "gyu": "ぎゅ",
-    "gyo": "ぎょ",
-    "ja": "じゃ",
-    "ju": "じゅ",
-    "jo": "じょ",
-    "bya": "びゃ",
-    "byu": "びゅ",
-    "byo": "びょ",
-    "pya": "ぴゃ",
-    "pyu": "ぴゅ",
-    "pyo": "ぴょ",
-    "tsa": "つぁ",
-    "tsi": "つぃ",
-    "tse": "つぇ",
-    "tso": "つぉ",
-    "shi": "し",
-    "chi": "ち",
-    "tsu": "つ",
-    "fu": "ふ",
-    "ji": "じ",
-    "ka": "か",
-    "ki": "き",
-    "ku": "く",
-    "ke": "け",
-    "ko": "こ",
-    "sa": "さ",
-    "su": "す",
-    "se": "せ",
-    "so": "そ",
-    "ta": "た",
-    "te": "て",
-    "to": "と",
-    "na": "な",
-    "ni": "に",
-    "nu": "ぬ",
-    "ne": "ね",
-    "no": "の",
-    "ha": "は",
-    "hi": "ひ",
-    "he": "へ",
-    "ho": "ほ",
-    "ma": "ま",
-    "mi": "み",
-    "mu": "む",
-    "me": "め",
-    "mo": "も",
-    "ya": "や",
-    "yu": "ゆ",
-    "yo": "よ",
-    "ra": "ら",
-    "ri": "り",
-    "ru": "る",
-    "re": "れ",
-    "ro": "ろ",
-    "wa": "わ",
-    "wo": "を",
-    "ga": "が",
-    "gi": "ぎ",
-    "gu": "ぐ",
-    "ge": "げ",
-    "go": "ご",
-    "za": "ざ",
-    "zu": "ず",
-    "ze": "ぜ",
-    "zo": "ぞ",
-    "da": "だ",
-    "de": "で",
-    "do": "ど",
-    "ba": "ば",
-    "bi": "び",
-    "bu": "ぶ",
-    "be": "べ",
-    "bo": "ぼ",
-    "pa": "ぱ",
-    "pi": "ぴ",
-    "pu": "ぷ",
-    "pe": "ぺ",
-    "po": "ぽ",
-    "va": "ゔぁ",
-    "vi": "ゔぃ",
-    "vu": "ゔ",
-    "ve": "ゔぇ",
-    "vo": "ゔぉ",
-    "a": "あ",
-    "i": "い",
-    "u": "う",
-    "e": "え",
-    "o": "お",
+_AMBIGUOUS_PARTICLES = {"to"}
+_MIXED_PARTICLES = {"ha", "wo", "e", "de", "no", "ni", "to", "ga", "mo"}
+_KNOWN_ENGLISH_TERMS = {
+    "api",
+    "gemini",
+    "github",
+    "ime",
+    "input",
+    "keyboard",
+    "llm",
+    "openai",
+    "replacement",
+    "stress",
+    "test",
+    "tool",
+    "uttate",
 }
+_ENGLISH_TERMS_BY_LENGTH = tuple(sorted(_KNOWN_ENGLISH_TERMS, key=len, reverse=True))
+
+
+@dataclass(frozen=True, slots=True)
+class TokenReading:
+    reading: str
+    token_type: str
+    confidence: float
+    candidates: tuple[JsonObject, ...] = ()
+    suspicious_candidates: tuple[JsonObject, ...] = ()
+    suspicious_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MechanicalReadingResult:
+    original_raw: str
+    mechanical_normalized: str
+    segments: tuple[JsonObject, ...]
+    ambiguous_spans: tuple[JsonObject, ...]
+    suspicious_spans: tuple[JsonObject, ...]
+    resolved_normalized: str | None = None
+
+    @property
+    def normalized_for_stage2(self) -> str:
+        return self.resolved_normalized or self.mechanical_normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,11 +160,17 @@ class ReadingNormalizationResult:
 @dataclass(frozen=True, slots=True)
 class PreparedLocalAIInput:
     masked: MaskedProtectedInput
-    boundary_segments: tuple[JsonObject, ...]
+    segment_plan: tuple[JsonObject, ...]
+
+    @property
+    def boundary_segments(self) -> tuple[JsonObject, ...]:
+        """Backward-compatible alias for older tests and docs."""
+
+        return self.segment_plan
 
 
 class LocalAILLMProvider(Protocol):
-    """Structured JSON boundary used by the main-derived local AI normalizer."""
+    """Structured JSON boundary used by the local AI stages."""
 
     def complete_json(
         self,
@@ -360,60 +181,286 @@ class LocalAILLMProvider(Protocol):
         ...
 
 
+class MechanicalReadingNormalizer:
+    """Deterministic Stage 1 reading normalizer for masked rough input."""
+
+    def normalize(self, original_raw_masked: str) -> MechanicalReadingResult:
+        if not original_raw_masked:
+            return MechanicalReadingResult("", "", (), (), ())
+
+        segments: list[JsonObject] = []
+        ambiguous_spans: list[JsonObject] = []
+        suspicious_spans: list[JsonObject] = []
+        for segment_id, raw in enumerate(_split_segment_plan(original_raw_masked)):
+            segment = self._normalize_segment(segment_id, raw)
+            segments.append(segment)
+            if segment.get("candidates"):
+                ambiguous_spans.append(
+                    {
+                        "id": segment_id,
+                        "raw": raw,
+                        "current_reading": segment["reading"],
+                        "candidates": segment["candidates"],
+                    }
+                )
+            if segment.get("suspicious_candidates") or segment.get("suspicious_reason"):
+                suspicious_spans.append(
+                    {
+                        "id": segment_id,
+                        "raw": raw,
+                        "current_reading": segment["reading"],
+                        "candidates": segment.get("suspicious_candidates", []),
+                        "reason": segment.get("suspicious_reason", "suspicious reading"),
+                    }
+                )
+
+        mechanical_normalized = "".join(str(segment["reading"]) for segment in segments)
+        _validate_mechanical_result(original_raw_masked, mechanical_normalized, segments)
+        return MechanicalReadingResult(
+            original_raw=original_raw_masked,
+            mechanical_normalized=mechanical_normalized,
+            segments=tuple(segments),
+            ambiguous_spans=tuple(ambiguous_spans),
+            suspicious_spans=tuple(suspicious_spans),
+        )
+
+    def _normalize_segment(self, segment_id: int, raw: str) -> JsonObject:
+        if _PROTECTED_PLACEHOLDER_PATTERN.fullmatch(raw):
+            return _segment(segment_id, raw, raw, "protected", "protected", 1.0)
+        if "|" in raw and raw.strip() == "|":
+            return _segment(segment_id, raw, raw, "boundary", "boundary", 1.0)
+        if raw.isspace() or _is_symbol_only(raw):
+            return _segment(segment_id, raw, raw, "symbol", "symbol", 1.0)
+
+        reading, token_type, confidence, candidates, suspicious_candidates, reason = (
+            _normalize_text_segment(raw)
+        )
+        kind = "unknown" if token_type == "unknown" else "text"
+        return _segment(
+            segment_id,
+            raw,
+            reading,
+            kind,
+            token_type,
+            confidence,
+            candidates=candidates,
+            suspicious_candidates=suspicious_candidates,
+            suspicious_reason=reason,
+        )
+
+
+class AmbiguityResolver:
+    """Optional Stage 1.5 chooser. It can only select from mechanical candidates."""
+
+    def __init__(self, provider: LocalAILLMProvider, *, system_prompt: str) -> None:
+        self.provider = provider
+        self.system_prompt = system_prompt
+
+    def resolve(self, result: MechanicalReadingResult) -> MechanicalReadingResult:
+        if not result.ambiguous_spans:
+            return result
+
+        payload = {
+            "task": "resolve_ambiguous_readings_only",
+            "mechanical_normalized": result.mechanical_normalized,
+            "ambiguous_spans": result.ambiguous_spans,
+            "rules": {
+                "choose_only_from_candidates": True,
+                "do_not_rewrite_full_text": True,
+                "do_not_add_text": True,
+                "preserve_placeholders": True,
+            },
+        }
+        messages: list[JsonObject] = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        try:
+            response = self.provider.complete_json(messages, AMBIGUITY_RESOLUTION_SCHEMA)
+        except Exception as error:
+            LOGGER.debug("[local-ai] ambiguity resolver fallback used: %s", error)
+            return result
+
+        choices = _valid_ambiguity_choices(response, result.ambiguous_spans)
+        if not choices:
+            LOGGER.debug("[local-ai] ambiguity resolver produced no valid choices")
+            return result
+
+        segments = [dict(segment) for segment in result.segments]
+        for segment_id, choice in choices.items():
+            segment = segments[segment_id]
+            if segment["kind"] in {"protected", "boundary"}:
+                continue
+            segment["reading"] = choice["reading"]
+            segment["type"] = choice["type"]
+            segment["confidence"] = choice["confidence"]
+        resolved = "".join(str(segment["reading"]) for segment in segments)
+        try:
+            _validate_mechanical_result(result.original_raw, resolved, segments)
+        except ValueError:
+            return result
+        return replace(result, segments=tuple(segments), resolved_normalized=resolved)
+
+
+class Stage2Converter:
+    """Local AI Stage 2: normalized kana/English input to kanji-kana candidates."""
+
+    def __init__(self, provider: LocalAILLMProvider, *, system_prompt: str) -> None:
+        self.provider = provider
+        self.system_prompt = system_prompt
+
+    def convert(
+        self,
+        result: MechanicalReadingResult,
+        *,
+        masked: MaskedProtectedInput,
+        previous_context: str,
+        candidate_count: int,
+        model: str = "",
+    ) -> ProviderResult:
+        normalized = result.normalized_for_stage2
+        payload = {
+            "task": "kanji_kana_conversion_from_normalized_reading",
+            "input_text": normalized,
+            "normalized_input": normalized,
+            "previous_context": previous_context.strip() or "(なし)",
+            "candidate_count": candidate_count,
+            "labels": ["faithful", "natural"],
+            "protected_placeholders": _protected_placeholders(masked.masks),
+            "rules": {
+                "preserve_placeholders": True,
+                "do_not_translate_english_terms": True,
+                "do_not_add_meaning": True,
+                "return_faithful_and_natural": True,
+                "convert_kana_to_common_kanji_when_clear": True,
+                "rough_separator_pipe_is_not_literal_output": True,
+            },
+        }
+        messages: list[JsonObject] = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        LOGGER.debug("[local-ai] stage2 request input: %s", normalized)
+        response = self.provider.complete_json(messages, LOCAL_AI_STAGE2_SCHEMA)
+        raw_response = json.dumps(response, ensure_ascii=False)
+        LOGGER.debug("[local-ai] stage2 raw response: %s", raw_response)
+        provider_result = parse_provider_result(
+            raw_response,
+            provider="local_ai",
+            model=model,
+            candidate_count=candidate_count,
+            raw_response=raw_response,
+        )
+        provider_result = _stage2_result_with_valid_placeholders(provider_result, normalized)
+        LOGGER.debug(
+            "[local-ai] stage2 parsed candidates count: %s",
+            len(provider_result.candidates),
+        )
+        return restore_masked_provider_result(provider_result, masked)
+
+
 class ReadingNormalizer:
     def __init__(
         self,
         provider: LocalAILLMProvider,
         *,
         system_prompt: str | None = None,
+        stage2_system_prompt: str | None = None,
+        enable_ambiguity_resolver: bool = True,
+        enable_stage2: bool = True,
         max_validation_attempts: int = 2,
     ) -> None:
         if max_validation_attempts <= 0:
             raise ValueError("max_validation_attempts must be positive.")
         self.provider = provider
         self.system_prompt = system_prompt or load_default_system_prompt()
+        self.stage2_system_prompt = stage2_system_prompt or load_stage2_system_prompt()
+        self.enable_ambiguity_resolver = enable_ambiguity_resolver
+        self.enable_stage2 = enable_stage2
         self.max_validation_attempts = max_validation_attempts
+        self.mechanical_normalizer = MechanicalReadingNormalizer()
 
     def normalize(self, raw_text: str) -> ReadingNormalizationResult:
+        prepared, result = self._normalize_masked(raw_text)
+        restored_segments = tuple(
+            _restore_masked_object(segment, prepared.masked) for segment in result.segments
+        )
+        return ReadingNormalizationResult(
+            normalized=prepared.masked.restore(result.normalized_for_stage2),
+            segments=restored_segments,
+            uncertain=_restored_uncertain(result, prepared.masked),
+        )
+
+    def convert_to_provider_result(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+        model: str = "",
+    ) -> ProviderResult:
+        prepared, result = self._normalize_masked(raw_text)
+        if self.enable_stage2:
+            try:
+                provider_result = Stage2Converter(
+                    self.provider,
+                    system_prompt=self.stage2_system_prompt,
+                ).convert(
+                    result,
+                    masked=prepared.masked,
+                    previous_context=previous_context,
+                    candidate_count=candidate_count,
+                    model=model,
+                )
+                LOGGER.debug("[local-ai] stage2 fallback used: false")
+                return provider_result
+            except Exception as error:
+                LOGGER.debug("[local-ai] stage2 fallback used: true reason=%s", error)
+
+        return self._fallback_provider_result(result, prepared.masked, model=model)
+
+    def _normalize_masked(
+        self,
+        raw_text: str,
+    ) -> tuple[PreparedLocalAIInput, MechanicalReadingResult]:
         if not raw_text.strip():
             raise ValueError("raw_text must not be empty.")
         prepared = _prepare_local_ai_input(raw_text)
-        model_text = prepared.masked.text
-        messages: list[JsonObject] = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": _input_payload(prepared)},
-        ]
-        last_error: ValueError | None = None
-        for attempt in range(self.max_validation_attempts):
-            response = self.provider.complete_json(messages, READING_NORMALIZATION_SCHEMA)
-            response = _apply_required_readings(response, model_text)
-            try:
-                result = _validate_response(response, model_text)
-                return _restore_masked_result(result, prepared.masked)
-            except ValueError as error:
-                last_error = error
-                if attempt + 1 == self.max_validation_attempts:
-                    break
-                messages.extend(
-                    [
-                        {
-                            "role": "assistant",
-                            "content": json.dumps(response, ensure_ascii=False),
-                        },
-                        {
-                            "role": "user",
-                            "content": _repair_payload(prepared, str(error)),
-                        },
-                    ]
-                )
-        raise ValueError(
-            "Stage 1 response failed fidelity validation after "
-            f"{self.max_validation_attempts} attempt(s): {last_error}"
-        ) from last_error
+        result = self.mechanical_normalizer.normalize(prepared.masked.text)
+        LOGGER.debug(
+            "[local-ai] stage1 mechanical normalized: %s",
+            result.mechanical_normalized,
+        )
+        LOGGER.debug("[local-ai] stage1 ambiguous count: %s", len(result.ambiguous_spans))
+        if self.enable_ambiguity_resolver and result.ambiguous_spans:
+            result = AmbiguityResolver(
+                self.provider,
+                system_prompt=self.system_prompt,
+            ).resolve(result)
+        return prepared, result
+
+    def _fallback_provider_result(
+        self,
+        result: MechanicalReadingResult,
+        masked: MaskedProtectedInput,
+        *,
+        model: str,
+    ) -> ProviderResult:
+        return ProviderResult(
+            candidates=(
+                Candidate(
+                    "mechanical_normalized",
+                    masked.restore(result.normalized_for_stage2),
+                ),
+            ),
+            uncertain=_restored_uncertain(result, masked),
+            provider="local_ai",
+            model=model,
+        )
 
 
 class ReadingNormalizationProvider:
-    """Adapt Stage 1 to the UI queue while later pipeline stages remain absent."""
+    """Adapt the local staged conversion flow to the UI queue."""
 
     def __init__(self, normalizer: ReadingNormalizer) -> None:
         self.normalizer = normalizer
@@ -425,15 +472,12 @@ class ReadingNormalizationProvider:
         previous_context: str = "",
         candidate_count: int = 2,
     ) -> ProviderResult:
-        del previous_context
         if candidate_count <= 0:
             raise ValueError("candidate_count must be positive.")
-        result = self.normalizer.normalize(raw_text)
-        candidates = (Candidate("faithful_reading", result.normalized),)[:candidate_count]
-        return ProviderResult(
-            candidates=candidates,
-            uncertain=result.uncertain,
-            provider="local_ai",
+        return self.normalizer.convert_to_provider_result(
+            raw_text,
+            previous_context=previous_context,
+            candidate_count=candidate_count,
         )
 
 
@@ -446,154 +490,450 @@ def load_default_system_prompt() -> str:
     )
 
 
-def _validate_response(response: JsonObject, raw_text: str) -> ReadingNormalizationResult:
-    source_echo = response.get("source_echo")
-    if source_echo != raw_text:
-        raise ValueError("Stage 1 response.source_echo did not exactly match original_raw.")
-
-    normalized = response.get("normalized")
-    if not isinstance(normalized, str) or not normalized.strip():
-        raise ValueError("Stage 1 response.normalized must be a non-empty string.")
-
-    segments_raw = response.get("segments")
-    if not isinstance(segments_raw, list):
-        raise ValueError("Stage 1 response.segments must be an array.")
-    segments = tuple(_validate_segment(item, index) for index, item in enumerate(segments_raw))
-    reconstructed_raw = "".join(str(segment["raw"]) for segment in segments)
-    reconstructed_reading = "".join(str(segment["reading"]) for segment in segments)
-
-    fidelity_errors: list[str] = []
-    if _without_whitespace(reconstructed_raw) != _without_whitespace(raw_text):
-        fidelity_errors.append("segments.raw did not cover original_raw exactly once and in order")
-    if _without_whitespace(reconstructed_reading) != _without_whitespace(normalized):
-        fidelity_errors.append("normalized contained text not represented by segments.reading")
-    new_kanji = _introduced_characters(normalized, raw_text, _is_kanji)
-    if new_kanji:
-        fidelity_errors.append(
-            f"normalized introduced kanji absent from original_raw: {''.join(new_kanji)}"
-        )
-    new_punctuation = _introduced_characters(normalized, raw_text, _is_punctuation)
-    if new_punctuation:
-        fidelity_errors.append(
-            "normalized introduced punctuation absent from original_raw: "
-            f"{''.join(new_punctuation)}"
-        )
-    fidelity_errors.extend(_segment_fidelity_errors(segments, raw_text))
-
-    uncertain_raw = response.get("uncertain")
-    if not isinstance(uncertain_raw, list):
-        raise ValueError("Stage 1 response.uncertain must be an array.")
-    uncertain = tuple(
-        _validate_uncertainty(item, index) for index, item in enumerate(uncertain_raw)
+def load_stage2_system_prompt() -> str:
+    return (
+        resources.files("uttate.prompts")
+        .joinpath("local_ai_stage2_converter.txt")
+        .read_text(encoding="utf-8")
+        .strip()
     )
-    for index, item in enumerate(uncertain):
-        if str(item["raw"]) not in raw_text:
-            fidelity_errors.append(f"uncertainty {index}.raw was not present in original_raw")
-    if fidelity_errors:
-        raise ValueError("Stage 1 fidelity violation: " + "; ".join(fidelity_errors) + ".")
-    return ReadingNormalizationResult(normalized, segments, uncertain)
-
-
-def _validate_segment(value: Any, index: int) -> JsonObject:
-    if not isinstance(value, dict):
-        raise ValueError(f"Stage 1 segment {index} must be an object.")
-    raw = _required_string(value, "raw", f"segment {index}")
-    reading = _required_string(value, "reading", f"segment {index}")
-    if not raw:
-        raise ValueError(f"Stage 1 segment {index}.raw must not be empty.")
-    if not reading and not raw.isspace():
-        raise ValueError(f"Stage 1 segment {index}.reading may be empty only for whitespace.")
-    segment_type = _required_string(value, "type", f"segment {index}")
-    if segment_type not in _SEGMENT_TYPES:
-        raise ValueError(f"Stage 1 segment {index} has an unsupported type.")
-    confidence = value.get("confidence")
-    if (
-        isinstance(confidence, bool)
-        or not isinstance(confidence, int | float)
-        or not 0 <= confidence <= 1
-    ):
-        raise ValueError(f"Stage 1 segment {index} confidence must be between 0 and 1.")
-    return {
-        "raw": raw,
-        "reading": reading,
-        "type": segment_type,
-        "confidence": float(confidence),
-    }
-
-
-def _validate_uncertainty(value: Any, index: int) -> JsonObject:
-    if not isinstance(value, dict):
-        raise ValueError(f"Stage 1 uncertainty {index} must be an object.")
-    return {
-        "raw": _required_string(value, "raw", f"uncertainty {index}"),
-        "reason": _required_string(value, "reason", f"uncertainty {index}"),
-    }
-
-
-def _required_string(value: dict[str, Any], key: str, location: str) -> str:
-    result = value.get(key)
-    if not isinstance(result, str):
-        raise ValueError(f"Stage 1 {location}.{key} must be a string.")
-    return result
 
 
 def _prepare_local_ai_input(raw_text: str) -> PreparedLocalAIInput:
     masked = mask_protected_input(raw_text)
-    return PreparedLocalAIInput(
-        masked=masked,
-        boundary_segments=tuple(_boundary_segments(masked.text)),
-    )
+    return PreparedLocalAIInput(masked=masked, segment_plan=tuple(_segment_plan(masked.text)))
 
 
 def _input_payload(prepared: PreparedLocalAIInput) -> str:
-    raw_text = prepared.masked.text
+    mechanical = MechanicalReadingNormalizer().normalize(prepared.masked.text)
     return json.dumps(
         {
-            "task": "reading_normalization_only",
-            "original_raw": raw_text,
-            "original_raw_masked": raw_text,
+            "task": "resolve_ambiguous_readings_only",
+            "original_raw": prepared.masked.text,
+            "original_raw_masked": prepared.masked.text,
+            "mechanical_normalized": mechanical.mechanical_normalized,
             "protected_placeholders": _protected_placeholders(prepared.masked.masks),
-            "boundary_rule": (
-                "Treat `|` as the Uttate rough-input separator inserted by Space. "
-                "Do not merge, reorder, or infer across boundaries unless the raw text requires it."
-            ),
-            "preprocessed_segments": prepared.boundary_segments,
-            "contract": {
-                "preserve_meaning": True,
-                "preserve_order": True,
-                "do_not_add_or_complete": True,
-                "do_not_translate_english": True,
-                "cover_each_non_whitespace_character_once": True,
-                "when_uncertain": "keep the raw span and report it in uncertain",
+            "segment_plan": list(prepared.segment_plan),
+            "segments": list(mechanical.segments),
+            "ambiguous_spans": list(mechanical.ambiguous_spans),
+            "suspicious_spans": list(mechanical.suspicious_spans),
+            "rules": {
+                "choose_only_from_candidates": True,
+                "do_not_rewrite_full_text": True,
+                "do_not_add_text": True,
                 "preserve_placeholders": True,
-                "use_mechanical_reading_patterns_as_hints": True,
             },
-            "required_exact_mappings": _required_exact_mappings(raw_text),
-            "ascii_classification_hints": _ascii_classification_hints(raw_text),
         },
         ensure_ascii=False,
     )
 
 
-def _repair_payload(prepared: PreparedLocalAIInput, validation_error: str) -> str:
-    raw_text = prepared.masked.text
-    return json.dumps(
+def _segment_plan(raw_text: str) -> list[JsonObject]:
+    return [
         {
-            "task": "repair_invalid_reading_normalization",
-            "original_raw": raw_text,
-            "original_raw_masked": raw_text,
-            "protected_placeholders": _protected_placeholders(prepared.masked.masks),
-            "preprocessed_segments": prepared.boundary_segments,
-            "validation_error": validation_error,
-            "required_exact_mappings": _required_exact_mappings(raw_text),
-            "ascii_classification_hints": _ascii_classification_hints(raw_text),
-            "instruction": (
-                "Regenerate from original_raw. Do not defend or explain the previous output. "
-                "Return only a schema-compliant object that satisfies the fidelity contract. "
-                "Protected placeholders must be copied exactly and not interpreted."
+            "id": index,
+            "raw": raw,
+            "kind": _segment_kind(raw),
+        }
+        for index, raw in enumerate(_split_segment_plan(raw_text))
+    ]
+
+
+def _split_segment_plan(raw_text: str) -> list[str]:
+    return [match.group(0) for match in _SEGMENT_PATTERN.finditer(raw_text)]
+
+
+def _segment_kind(raw: str) -> str:
+    if _PROTECTED_PLACEHOLDER_PATTERN.fullmatch(raw):
+        return "protected"
+    if "|" in raw and raw.strip() == "|":
+        return "boundary"
+    if raw.isspace() or _is_symbol_only(raw):
+        return "symbol"
+    return "text"
+
+
+def _segment(
+    segment_id: int,
+    raw: str,
+    reading: str,
+    kind: str,
+    token_type: str,
+    confidence: float,
+    *,
+    candidates: tuple[JsonObject, ...] = (),
+    suspicious_candidates: tuple[JsonObject, ...] = (),
+    suspicious_reason: str = "",
+) -> JsonObject:
+    return {
+        "id": segment_id,
+        "raw": raw,
+        "reading": reading,
+        "kind": kind,
+        "type": token_type,
+        "confidence": confidence,
+        "candidates": list(candidates),
+        "suspicious_candidates": list(suspicious_candidates),
+        "suspicious_reason": suspicious_reason,
+    }
+
+
+def _normalize_text_segment(
+    raw: str,
+) -> tuple[str, str, float, tuple[JsonObject, ...], tuple[JsonObject, ...], str]:
+    output: list[str] = []
+    token_types: list[str] = []
+    confidences: list[float] = []
+    candidates: list[JsonObject] = []
+    suspicious_candidates: list[JsonObject] = []
+    suspicious_reasons: list[str] = []
+    last_index = 0
+
+    for match in _ASCII_WORD_PATTERN.finditer(raw):
+        output.append(raw[last_index : match.start()])
+        token = match.group(0)
+        token_reading = _normalize_ascii_token(token)
+        output.append(token_reading.reading)
+        token_types.append(token_reading.token_type)
+        confidences.append(token_reading.confidence)
+        candidates.extend(token_reading.candidates)
+        suspicious_candidates.extend(token_reading.suspicious_candidates)
+        if token_reading.suspicious_reason:
+            suspicious_reasons.append(token_reading.suspicious_reason)
+        last_index = match.end()
+
+    output.append(raw[last_index:])
+    if not token_types:
+        return raw, "symbol" if _is_symbol_only(raw) else "unknown", 1.0, (), (), ""
+    return (
+        "".join(output),
+        _combined_type(token_types),
+        min(confidences),
+        tuple(candidates),
+        tuple(suspicious_candidates),
+        "; ".join(suspicious_reasons),
+    )
+
+
+def _normalize_ascii_token(token: str) -> TokenReading:
+    lowered = token.casefold()
+
+    if lowered in _KNOWN_ENGLISH_TERMS:
+        return TokenReading(token, "english", 0.95)
+    if lowered in _PARTICLE_READINGS:
+        reading = _PARTICLE_READINGS[lowered]
+        candidates: tuple[JsonObject, ...] = ()
+        confidence = 0.9
+        if lowered in _AMBIGUOUS_PARTICLES:
+            candidates = (
+                {
+                    "reading": reading,
+                    "type": "japanese_particle",
+                    "reason": "Japanese particle candidate",
+                },
+                {
+                    "reading": token,
+                    "type": "english",
+                    "reason": "English word candidate",
+                },
+            )
+            confidence = 0.72
+        return TokenReading(reading, "japanese_particle", confidence, candidates=candidates)
+
+    strict = _strict_romaji_to_hiragana(lowered) if token.islower() else None
+    if strict is not None:
+        return TokenReading(strict, "japanese_romaji", 0.95)
+
+    mixed = _split_mixed_ascii_token(token)
+    if mixed is not None:
+        reading = " ".join(part.reading for part in mixed)
+        token_types = [part.token_type for part in mixed]
+        candidates = tuple(candidate for part in mixed for candidate in part.candidates)
+        suspicious_candidates = tuple(
+            candidate for part in mixed for candidate in part.suspicious_candidates
+        )
+        suspicious_reasons = [
+            part.suspicious_reason for part in mixed if part.suspicious_reason
+        ]
+        return TokenReading(
+            reading,
+            _combined_type(token_types),
+            min(part.confidence for part in mixed),
+            candidates=candidates,
+            suspicious_candidates=suspicious_candidates,
+            suspicious_reason="; ".join(suspicious_reasons),
+        )
+
+    if not token.islower():
+        return TokenReading(token, "name_like", 0.95)
+
+    typo_candidates = _typo_tolerant_candidates(lowered)
+    if typo_candidates:
+        return TokenReading(
+            token,
+            "unknown",
+            0.42,
+            suspicious_candidates=tuple(
+                {
+                    "reading": candidate,
+                    "type": "japanese_romaji_typo_tolerant",
+                    "reason": "Minor romaji typo candidate",
+                }
+                for candidate in typo_candidates
             ),
-        },
-        ensure_ascii=False,
+            suspicious_reason="not fully parseable as Japanese romaji",
+        )
+    if _looks_english_like(token):
+        return TokenReading(token, "english", 0.85)
+    return TokenReading(
+        token,
+        "unknown",
+        0.35,
+        suspicious_reason="not parseable as Japanese romaji or a known English token",
+    )
+
+
+def _split_mixed_ascii_token(token: str) -> tuple[TokenReading, ...] | None:
+    lowered = token.casefold()
+    if not any(term in lowered for term in _KNOWN_ENGLISH_TERMS):
+        return None
+
+    parts: list[TokenReading] = []
+    index = 0
+    while index < len(token):
+        english = _matching_english_term(lowered, index)
+        if english:
+            raw = token[index : index + len(english)]
+            parts.append(TokenReading(raw, "english", 0.95))
+            index += len(english)
+            continue
+
+        particle = _matching_particle(lowered, index)
+        if particle:
+            parts.append(TokenReading(_PARTICLE_READINGS[particle], "japanese_particle", 0.88))
+            index += len(particle)
+            continue
+
+        next_english = _next_english_index(lowered, index)
+        end = next_english if next_english is not None else len(token)
+        raw = token[index:end]
+        parts.append(_normalize_non_mixed_tail(raw))
+        index = end
+
+    if len(parts) <= 1 or any(part.token_type == "unknown" for part in parts):
+        return None
+    return tuple(parts)
+
+
+def _normalize_non_mixed_tail(raw: str) -> TokenReading:
+    if not raw:
+        return TokenReading(raw, "symbol", 1.0)
+    lowered = raw.casefold()
+    particle = _PARTICLE_READINGS.get(lowered)
+    if particle is not None:
+        return TokenReading(particle, "japanese_particle", 0.88)
+    strict = _strict_romaji_to_hiragana(lowered) if raw.islower() else None
+    if strict is not None:
+        return TokenReading(strict, "japanese_romaji", 0.9)
+    return _normalize_ascii_token(raw)
+
+
+def _matching_english_term(lowered: str, index: int) -> str | None:
+    return next(
+        (term for term in _ENGLISH_TERMS_BY_LENGTH if lowered.startswith(term, index)),
+        None,
+    )
+
+
+def _matching_particle(lowered: str, index: int) -> str | None:
+    particles = sorted(_MIXED_PARTICLES, key=len, reverse=True)
+    return next(
+        (particle for particle in particles if lowered.startswith(particle, index)),
+        None,
+    )
+
+
+def _next_english_index(lowered: str, index: int) -> int | None:
+    positions = [lowered.find(term, index) for term in _KNOWN_ENGLISH_TERMS]
+    positions = [position for position in positions if position >= 0]
+    return min(positions) if positions else None
+
+
+def _strict_romaji_to_hiragana(token: str) -> str | None:
+    if not token:
+        return None
+    value = token.casefold()
+    index = 0
+    reading: list[str] = []
+    while index < len(value):
+        if _is_double_consonant(value, index):
+            reading.append("っ")
+            index += 1
+            continue
+        if value[index] == "n":
+            next_char = value[index + 1] if index + 1 < len(value) else ""
+            after_next = value[index + 2] if index + 2 < len(value) else ""
+            if not next_char:
+                reading.append("ん")
+                index += 1
+                continue
+            if next_char == "n" and after_next not in "aiueoy":
+                reading.append("ん")
+                index += 2
+                continue
+            if next_char not in "aiueoy":
+                reading.append("ん")
+                index += 1
+                continue
+        syllable = next((key for key in _ROMAJI_KEYS if value.startswith(key, index)), None)
+        if syllable is None:
+            return None
+        reading.append(ROMAJI_TABLE[syllable])
+        index += len(syllable)
+    return "".join(reading)
+
+
+def _is_double_consonant(value: str, index: int) -> bool:
+    if index + 1 >= len(value):
+        return False
+    char = value[index]
+    return char == value[index + 1] and char not in "aeioun"
+
+
+def _typo_tolerant_candidates(token: str) -> list[str]:
+    candidates: list[str] = []
+    if token and token[-1] not in "aeioun":
+        reading = _strict_romaji_to_hiragana(token + "u")
+        if reading is not None:
+            candidates.append(reading)
+    collapsed_n = re.sub(r"n{3,}", "nn", token)
+    if collapsed_n != token:
+        reading = _strict_romaji_to_hiragana(collapsed_n)
+        if reading is not None:
+            candidates.append(reading)
+    return list(dict.fromkeys(candidates))
+
+
+def _looks_english_like(token: str) -> bool:
+    lowered = token.casefold()
+    if len(lowered) <= 2:
+        return False
+    if any(cluster in lowered for cluster in ("str", "pl", "cl", "tr", "dr", "tion")):
+        return True
+    return lowered.endswith(("ing", "er", "ed", "ly", "ment"))
+
+
+def _combined_type(token_types: list[str]) -> str:
+    unique = set(token_types)
+    if len(unique) == 1:
+        return token_types[0]
+    if unique <= {"japanese_romaji", "japanese_particle"}:
+        return "japanese_romaji"
+    if "unknown" in unique:
+        return "unknown"
+    return "mixed"
+
+
+def _is_symbol_only(raw: str) -> bool:
+    return bool(raw) and not any(character.isalnum() for character in raw)
+
+
+def _validate_mechanical_result(
+    original_raw: str,
+    mechanical_normalized: str,
+    segments: list[JsonObject] | tuple[JsonObject, ...],
+) -> None:
+    if "".join(str(segment["raw"]) for segment in segments) != original_raw:
+        raise ValueError("segment raw coverage must exactly match original_raw.")
+    if "".join(str(segment["reading"]) for segment in segments) != mechanical_normalized:
+        raise ValueError("segment readings must exactly match mechanical_normalized.")
+    segment_ids = {int(segment["id"]) for segment in segments}
+    for segment in segments:
+        confidence = segment["confidence"]
+        if not isinstance(confidence, int | float) or not 0 <= confidence <= 1:
+            raise ValueError("segment confidence must be between 0 and 1.")
+        if segment["kind"] in {"protected", "boundary"} and segment["reading"] != segment["raw"]:
+            raise ValueError("protected and boundary segments must be preserved.")
+        if int(segment["id"]) not in segment_ids:
+            raise ValueError("segment id was invalid.")
+
+
+def _valid_ambiguity_choices(
+    response: JsonObject,
+    ambiguous_spans: tuple[JsonObject, ...],
+) -> dict[int, JsonObject]:
+    choices_raw = response.get("choices")
+    if not isinstance(choices_raw, list):
+        return {}
+    spans = {int(span["id"]): span for span in ambiguous_spans}
+    choices: dict[int, JsonObject] = {}
+    for choice in choices_raw:
+        if not isinstance(choice, dict):
+            continue
+        choice_id = choice.get("id")
+        if isinstance(choice_id, bool) or not isinstance(choice_id, int | float):
+            continue
+        segment_id = int(choice_id)
+        span = spans.get(segment_id)
+        if span is None:
+            continue
+        reading = choice.get("reading")
+        choice_type = choice.get("type")
+        confidence = choice.get("confidence")
+        if (
+            not isinstance(reading, str)
+            or not isinstance(choice_type, str)
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, int | float)
+            or not 0 <= confidence <= 1
+        ):
+            continue
+        allowed = {
+            str(candidate["reading"])
+            for candidate in span.get("candidates", [])
+            if isinstance(candidate, dict) and isinstance(candidate.get("reading"), str)
+        }
+        if reading not in allowed:
+            continue
+        choices[segment_id] = {
+            "reading": reading,
+            "type": choice_type,
+            "confidence": float(confidence),
+        }
+    return choices
+
+
+def _stage2_result_with_valid_placeholders(
+    result: ProviderResult,
+    normalized_input: str,
+) -> ProviderResult:
+    placeholders = set(_PROTECTED_PLACEHOLDER_PATTERN.findall(normalized_input))
+    if not placeholders:
+        return result
+
+    valid_candidates: list[Candidate] = []
+    for candidate in result.candidates:
+        if all(
+            candidate.text.count(placeholder) == normalized_input.count(placeholder)
+            for placeholder in placeholders
+        ):
+            valid_candidates.append(candidate)
+        else:
+            LOGGER.debug(
+                "[local-ai] stage2 candidate dropped because placeholder changed: %s",
+                candidate.text,
+            )
+    if not valid_candidates:
+        raise ProviderError("Stage 2 response changed or dropped protected placeholders.")
+    if len(valid_candidates) == len(result.candidates):
+        return result
+    return ProviderResult(
+        candidates=tuple(valid_candidates),
+        uncertain=result.uncertain,
+        provider=result.provider,
+        model=result.model,
+        raw_response=result.raw_response,
+        usage=result.usage,
     )
 
 
@@ -608,370 +948,39 @@ def _protected_placeholders(masks: tuple[ProtectedMask, ...]) -> list[JsonObject
     ]
 
 
-def _boundary_segments(raw_text: str) -> list[JsonObject]:
-    segments: list[JsonObject] = []
-    current: list[str] = []
-    for character in raw_text:
-        if character == "|":
-            if current:
-                segments.append(_mechanical_segment("".join(current)))
-                current = []
-            segments.append(
-                {
-                    "raw_masked": character,
-                    "mechanical_strict": character,
-                    "mechanical_typo_tolerant": character,
-                    "kind": "boundary",
-                    "suspicious_tokens": [],
-                }
-            )
-            continue
-        current.append(character)
-    if current:
-        segments.append(_mechanical_segment("".join(current)))
-    return segments
-
-
-def _mechanical_segment(text: str) -> JsonObject:
-    suspicious_tokens: list[JsonObject] = []
-    return {
-        "raw_masked": text,
-        "mechanical_strict": _mechanical_reading(text, typo_tolerant=False, suspicious=None),
-        "mechanical_typo_tolerant": _mechanical_reading(
-            text,
-            typo_tolerant=True,
-            suspicious=suspicious_tokens,
-        ),
-        "kind": "text",
-        "suspicious_tokens": suspicious_tokens,
-    }
-
-
-def _mechanical_reading(
-    text: str,
-    *,
-    typo_tolerant: bool,
-    suspicious: list[JsonObject] | None,
-) -> str:
-    output: list[str] = []
-    last_index = 0
-    for match in _ROMAJI_TOKEN_PATTERN.finditer(text):
-        output.append(text[last_index : match.start()])
-        token = match.group(0)
-        output.append(_mechanical_token_reading(token, typo_tolerant, suspicious))
-        last_index = match.end()
-    output.append(text[last_index:])
-    return "".join(output)
-
-
-def _mechanical_token_reading(
-    token: str,
-    typo_tolerant: bool,
-    suspicious: list[JsonObject] | None,
-) -> str:
-    particle = _PARTICLE_READINGS.get(token.casefold())
-    if particle is not None:
-        return particle
-    strict = _romaji_to_hiragana(token)
-    if strict is not None and token.islower():
-        return strict
-    if not token.islower() or not typo_tolerant:
-        if suspicious is not None and _is_suspicious_japanese_token(token):
-            suspicious.append(
-                {
-                    "raw": token,
-                    "reason": "not fully parseable as Japanese romaji; may be typo or non-Japanese",
-                }
-            )
-        return token
-    tolerant, changed = _romaji_to_hiragana_tolerant(token)
-    if suspicious is not None and _is_suspicious_japanese_token(token):
-        suspicious.append(
-            {
-                "raw": token,
-                "reason": (
-                    "contains consonant/vowel pattern that is not valid Japanese romaji "
-                    "except yoon, n, or small-tsu"
-                ),
-            }
-        )
-    return tolerant if changed else token
-
-
-def _romaji_to_hiragana_tolerant(token: str) -> tuple[str, bool]:
-    value = token.casefold()
-    index = 0
-    reading: list[str] = []
-    changed = False
-    while index < len(value):
-        if (
-            index + 1 < len(value)
-            and value[index] == value[index + 1]
-            and value[index] not in "aeioun"
-        ):
-            reading.append("っ")
-            index += 1
-            changed = True
-            continue
-        if value[index] == "n" and (index + 1 == len(value) or value[index + 1] not in "aeiouy"):
-            reading.append("ん")
-            index += 1
-            changed = True
-            continue
-        syllable = next(
-            (item for item in _ROMAJI_SYLLABLES if value.startswith(item, index)),
-            None,
-        )
-        if syllable is None:
-            reading.append(token[index])
-            index += 1
-            continue
-        reading.append(_ROMAJI_TO_HIRAGANA[syllable])
-        index += len(syllable)
-        changed = True
-    return "".join(reading), changed
-
-
-def _is_suspicious_japanese_token(token: str) -> bool:
-    if not token.isascii() or not token.isalpha() or not token.islower():
-        return False
-    if not any(character in "aeiou" for character in token):
-        return True
-    if token[-1] not in "aeioun":
-        return True
-    return _romaji_to_hiragana(token) is None and _has_japanese_like_vowel_pattern(token)
-
-
-def _has_japanese_like_vowel_pattern(token: str) -> bool:
-    vowels = set("aeiou")
-    consonant_run = 0
-    for index, character in enumerate(token):
-        if character in vowels:
-            consonant_run = 0
-            continue
-        if character == "n":
-            consonant_run = 0
-            continue
-        consonant_run += 1
-        if consonant_run >= 2:
-            pair = token[index - 1 : index + 1]
-            if pair not in {"ky", "sh", "ch", "ny", "hy", "my", "ry", "gy", "by", "py", "ts"}:
-                return True
-    return False
-
-
-def _restore_masked_result(
-    result: ReadingNormalizationResult,
-    masked: MaskedProtectedInput,
-) -> ReadingNormalizationResult:
-    return ReadingNormalizationResult(
-        normalized=masked.restore(result.normalized),
-        segments=tuple(_restore_masked_object(segment, masked) for segment in result.segments),
-        uncertain=tuple(_restore_masked_object(item, masked) for item in result.uncertain),
-    )
-
-
 def _restore_masked_object(value: JsonObject, masked: MaskedProtectedInput) -> JsonObject:
     restored: JsonObject = {}
     for key, item in value.items():
-        restored[key] = masked.restore(item) if isinstance(item, str) else item
+        if key in {"candidates", "suspicious_candidates"} and isinstance(item, list):
+            restored[key] = [
+                _restore_masked_object(candidate, masked)
+                if isinstance(candidate, dict)
+                else masked.restore(candidate)
+                if isinstance(candidate, str)
+                else candidate
+                for candidate in item
+            ]
+        else:
+            restored[key] = masked.restore(item) if isinstance(item, str) else item
     return restored
 
 
-def _without_whitespace(value: str) -> str:
-    return "".join(character for character in value if not character.isspace())
-
-
-def _required_exact_mappings(raw_text: str) -> list[JsonObject]:
-    mappings: list[JsonObject] = []
-    for match in _ROMAJI_TOKEN_PATTERN.finditer(raw_text):
-        raw = match.group(0)
-        particle_reading = _PARTICLE_READINGS.get(raw.casefold())
-        reading = particle_reading or (_romaji_to_hiragana(raw) if raw.islower() else None)
-        if reading is not None:
-            mappings.append(
-                {
-                    "raw": raw,
-                    "required_reading": reading,
-                    "type": "particle" if particle_reading is not None else "kana",
-                }
-            )
-    return mappings
-
-
-def _ascii_classification_hints(raw_text: str) -> JsonObject:
-    likely_japanese: list[str] = []
-    likely_english: list[str] = []
-    name_or_acronym: list[str] = []
-    for match in _ROMAJI_TOKEN_PATTERN.finditer(raw_text):
-        token = match.group(0)
-        if not token.islower():
-            name_or_acronym.append(token)
-        elif _looks_like_japanese_romaji(token):
-            likely_japanese.append(token)
-        else:
-            likely_english.append(token)
-    return {
-        "likely_japanese_romaji": likely_japanese,
-        "likely_english": likely_english,
-        "name_or_acronym": name_or_acronym,
-    }
-
-
-def _looks_like_japanese_romaji(token: str) -> bool:
-    return _romaji_to_hiragana(token) is not None
-
-
-def _romaji_to_hiragana(token: str) -> str | None:
-    value = token.casefold()
-    index = 0
-    reading: list[str] = []
-    while index < len(value):
-        if (
-            index + 1 < len(value)
-            and value[index] == value[index + 1]
-            and value[index] not in "aeioun"
-        ):
-            reading.append("っ")
-            index += 1
-            continue
-        if value[index] == "n" and (index + 1 == len(value) or value[index + 1] not in "aeiouy"):
-            reading.append("ん")
-            index += 1
-            continue
-        syllable = next(
-            (item for item in _ROMAJI_SYLLABLES if value.startswith(item, index)),
-            None,
+def _restored_uncertain(
+    result: MechanicalReadingResult,
+    masked: MaskedProtectedInput,
+) -> tuple[JsonObject, ...]:
+    uncertain: list[JsonObject] = []
+    for span in (*result.ambiguous_spans, *result.suspicious_spans):
+        restored = _restore_masked_object(span, masked)
+        uncertain.append(
+            {
+                "raw": str(restored.get("raw", "")),
+                "reason": str(restored.get("reason", "ambiguous or suspicious reading")),
+                "candidates": [
+                    str(candidate.get("reading"))
+                    for candidate in restored.get("candidates", [])
+                    if isinstance(candidate, dict) and isinstance(candidate.get("reading"), str)
+                ],
+            }
         )
-        if syllable is None:
-            return None
-        reading.append(_ROMAJI_TO_HIRAGANA[syllable])
-        index += len(syllable)
-    return "".join(reading) if value else None
-
-
-def _apply_required_readings(response: JsonObject, raw_text: str) -> JsonObject:
-    mappings = {str(item["raw"]): item for item in _required_exact_mappings(raw_text)}
-    segments = response.get("segments")
-    if not isinstance(segments, list):
-        return response
-
-    corrected = deepcopy(response)
-    corrected_segments = corrected.get("segments")
-    if not isinstance(corrected_segments, list):
-        return response
-    changed = False
-    uncertain_value = corrected.get("uncertain")
-    uncertain = uncertain_value if isinstance(uncertain_value, list) else None
-    for segment in corrected_segments:
-        if not isinstance(segment, dict):
-            continue
-        raw = segment.get("raw")
-        mapping = mappings.get(raw) if isinstance(raw, str) else None
-        if mapping is None:
-            continue
-        required_reading = mapping["required_reading"]
-        required_type = mapping["type"]
-        if segment.get("reading") != required_reading or segment.get("type") != required_type:
-            segment["reading"] = required_reading
-            segment["type"] = required_type
-            changed = True
-    for segment in corrected_segments:
-        if not isinstance(segment, dict):
-            continue
-        raw = segment.get("raw")
-        reading = segment.get("reading")
-        if (
-            isinstance(raw, str)
-            and isinstance(reading, str)
-            and raw == reading
-            and raw.isascii()
-            and raw.isalpha()
-            and len(raw) >= 16
-        ):
-            segment["confidence"] = min(float(segment.get("confidence", 0.0)), 0.35)
-            if uncertain is not None and not any(
-                isinstance(item, dict) and item.get("raw") == raw for item in uncertain
-            ):
-                uncertain.append(
-                    {
-                        "raw": raw,
-                        "reason": (
-                            "長いASCII列に日本語ローマ字と英語が連結している可能性があるため、"
-                            "原文を保持しました"
-                        ),
-                    }
-                )
-    if changed:
-        corrected["normalized"] = " ".join(
-            str(segment.get("reading", ""))
-            for segment in corrected_segments
-            if isinstance(segment, dict) and str(segment.get("reading", "")).strip()
-        )
-    return corrected
-
-
-def _segment_fidelity_errors(segments: tuple[JsonObject, ...], raw_text: str) -> list[str]:
-    errors: list[str] = []
-    required_mappings = {
-        str(item["raw"]): str(item["required_reading"])
-        for item in _required_exact_mappings(raw_text)
-    }
-    for index, segment in enumerate(segments):
-        raw = str(segment["raw"])
-        reading = str(segment["reading"])
-        segment_type = str(segment["type"])
-        compact_raw = _without_whitespace(raw)
-        compact_reading = _without_whitespace(reading)
-        expected_particle = _PARTICLE_READINGS.get(compact_raw.casefold())
-        if (
-            expected_particle is not None
-            and segment_type in {"particle", "kana"}
-            and compact_reading != expected_particle
-        ):
-            errors.append(
-                f"segment {index} changed particle {raw!r}; expected {expected_particle!r}"
-            )
-        expected_reading = required_mappings.get(raw)
-        if expected_reading is not None and compact_reading != expected_reading:
-            errors.append(
-                f"segment {index} did not use required reading {expected_reading!r} for {raw!r}"
-            )
-        if segment_type == "english" and compact_reading != compact_raw:
-            errors.append(f"segment {index} translated or changed English text {raw!r}")
-        if (
-            compact_raw.islower()
-            and _looks_like_japanese_romaji(compact_raw)
-            and compact_raw.casefold() not in _PARTICLE_READINGS
-            and compact_reading.casefold() == compact_raw.casefold()
-        ):
-            errors.append(f"segment {index} left likely Japanese romaji unnormalized: {raw!r}")
-        if segment_type == "unknown" and compact_reading != compact_raw:
-            errors.append(f"segment {index} changed unknown text {raw!r}")
-    return errors
-
-
-def _introduced_characters(output: str, source: str, predicate: Any) -> list[str]:
-    source_counts = Counter(character for character in source if predicate(character))
-    introduced: list[str] = []
-    for character in output:
-        if not predicate(character):
-            continue
-        if source_counts[character] > 0:
-            source_counts[character] -= 1
-        elif character not in introduced:
-            introduced.append(character)
-    return introduced
-
-
-def _is_kanji(character: str) -> bool:
-    codepoint = ord(character)
-    return (
-        0x3400 <= codepoint <= 0x4DBF
-        or 0x4E00 <= codepoint <= 0x9FFF
-        or 0xF900 <= codepoint <= 0xFAFF
-    )
-
-
-def _is_punctuation(character: str) -> bool:
-    return unicodedata.category(character).startswith("P")
+    return tuple(uncertain)

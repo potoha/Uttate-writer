@@ -118,7 +118,7 @@ class OpenAICompatibleJSONClient(LocalAILLMProvider):
 
         content = self._message_content(response_data)
         try:
-            decoded: Any = content if isinstance(content, dict) else json.loads(content)
+            decoded: Any = content if isinstance(content, dict) else _decode_json_object(content)
         except (TypeError, json.JSONDecodeError) as error:
             raise ProviderResponseError(
                 "The assistant message did not contain a valid JSON object."
@@ -276,20 +276,27 @@ class LocalAIProvider(ReadingNormalizationProvider):
         previous_context: str = "",
         candidate_count: int = 2,
     ) -> ProviderResult:
-        detected_model = self.client.ensure_model()
-        self.prompt_registry.ensure_model_profile(detected_model)
-        self.normalizer.system_prompt = self.prompt_registry.prompt_for_model(detected_model)
-        result = super().convert(
+        model = ""
+        try:
+            detected_model = self.client.ensure_model()
+        except LocalAIProviderError:
+            detected_model = ""
+        if detected_model:
+            self.prompt_registry.ensure_model_profile(detected_model)
+            self.normalizer.system_prompt = self.prompt_registry.prompt_for_model(detected_model)
+            model = detected_model
+
+        result = self.normalizer.convert_to_provider_result(
             raw_text,
             previous_context=previous_context,
             candidate_count=candidate_count,
+            model=model,
         )
-        model = self.client.model if not self.client.model.startswith("__") else ""
         return ProviderResult(
             candidates=result.candidates,
             uncertain=result.uncertain,
             provider=self.name,
-            model=model,
+            model=model or result.model,
             raw_response=result.raw_response,
             usage=result.usage,
         )
@@ -302,3 +309,43 @@ def _strip_json_fence(content: str) -> str:
     if len(lines) >= 3 and lines[-1].strip() == "```":
         return "\n".join(lines[1:-1]).strip()
     return content
+
+
+def _decode_json_object(content: str) -> JsonObject:
+    stripped = _strip_json_fence(content.strip())
+    for candidate in (stripped, _extract_first_json_object(stripped)):
+        try:
+            decoded: Any = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            return decoded
+    raise json.JSONDecodeError("No JSON object found", stripped, 0)
+
+
+def _extract_first_json_object(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        return text
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text

@@ -135,14 +135,17 @@ LMSTUDIO_MODEL=
 
 `LMSTUDIO_MODEL` が空の場合、Providerは `/v1/models` の先頭モデルを自動検出します。
 
-`local_ai` は自然文候補A/Bではなく、Stage 1の忠実な読み転写を `faithful_reading` 候補として返します。
+`local_ai` は、まずローマ字からかなへの正規化を機械的に行い、その後、必要な場合だけ曖昧な読みの候補選択と漢字かな交じり文への変換にLM Studio互換APIのローカルモデルを使います。Stage 2まで成功した場合は `faithful` / `natural` の自然文候補を返し、モデル応答が壊れた場合でも `mechanical_normalized` 候補として機械正規化結果を表示します。
 
 API Providerへ送る前に、特殊タグで保護した文字列は `__UTTATE_PROTECTED_0__` のようなplaceholderへ置き換えます。タグ内の元文字列や変換後文字列はGemini / OpenAI / Local AIへ送らず、応答を検証した後にアプリ側で機械的に復元します。
 
-また、入力画面で `Space` を押すと挿入される ` | ` はUttate rough-input separatorとして扱います。Local AI payloadには、この区切りごとの機械読み候補を2種類入れます。
+また、入力画面で `Space` を押すと挿入される ` | ` はUttate rough-input separatorとして扱い、Local AIの機械正規化でも前後の空白ごと保持します。
 
-- `mechanical_strict`: 確実にローマ字として読めるものだけ、かな・英語交じりに機械変換
-- `mechanical_typo_tolerant`: 拗音・撥音・促音以外の母音/子音ペア規則から外れる語を、タイポまたは日本語以外の可能性として扱う補助候補
+- Stage 1: `MechanicalReadingNormalizer` がplaceholder、区切り、記号、空白を保持しつつ、読めるローマ字をかなへ変換
+- Stage 1.5: 曖昧な短い語などがある場合だけ、ローカルモデルに候補選択を依頼
+- Stage 2: 正規化済みのかな・英語混じり文を、ローカルモデルで漢字かな交じり候補へ変換
+
+送信文字列、前処理、API payload、受信後の復元、UI表示までの詳しい流れは [API Preprocessing Flow](docs/API_PREPROCESSING_FLOW.md) を参照してください。
 
 ### Local AI prompt profile
 

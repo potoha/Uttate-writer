@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
 from uttate.config import (
     AppSettings,
     DatasetCaptureSettings,
+    InputPanelSettings,
+    ReviewHUDSettings,
     default_dataset_capture_path,
     save_settings,
 )
@@ -90,6 +93,47 @@ class SettingsWindow(QDialog):
         self.dataset_capture_checkbox.setChecked(self.app_settings.dataset.capture_enabled)
         self.dataset_store_path = QLineEdit(self._dataset_store_text())
         self.dataset_store_path.setPlaceholderText(str(default_dataset_capture_path()))
+        self.review_pending_count = QComboBox()
+        for count in (1, 3, 5):
+            self.review_pending_count.addItem(str(count), count)
+        pending_count_index = self.review_pending_count.findData(
+            self.app_settings.review_hud.visible_pending_count
+        )
+        self.review_pending_count.setCurrentIndex(
+            max(0, pending_count_index)
+        )
+        self.review_position = QComboBox()
+        for value, label in (
+            ("bottom_right", "Bottom right"),
+            ("bottom_center", "Bottom center"),
+            ("top_right", "Top right"),
+        ):
+            self.review_position.addItem(label, value)
+        self.review_position.setCurrentIndex(
+            max(0, self.review_position.findData(self.app_settings.review_hud.position))
+        )
+        self.review_width = self._spin_box(self.app_settings.review_hud.width, 240, 1000)
+        self.review_height = self._spin_box(self.app_settings.review_hud.height, 180, 800)
+        self.input_position = QComboBox()
+        for value, label in (
+            ("bottom_center", "Bottom center"),
+            ("bottom_right", "Bottom right"),
+            ("top_right", "Top right"),
+        ):
+            self.input_position.addItem(label, value)
+        self.input_position.setCurrentIndex(
+            max(0, self.input_position.findData(self.app_settings.input_panel.position))
+        )
+        self.input_width = self._spin_box(self.app_settings.input_panel.width, 280, 1200)
+        self.input_height = self._spin_box(self.app_settings.input_panel.height, 120, 500)
+        self.auto_remove_accepted = QCheckBox("Auto remove accepted chunks from ReviewHUD")
+        self.auto_remove_accepted.setChecked(self.app_settings.review_hud.auto_remove_accepted)
+        self.always_show_review_hud = QCheckBox("Always show ReviewHUD")
+        self.always_show_review_hud.setChecked(self.app_settings.review_hud.always_show)
+        self.show_original = QCheckBox("Show original text")
+        self.show_original.setChecked(self.app_settings.review_hud.show_original)
+        self.show_diff = QCheckBox("Show diff text")
+        self.show_diff.setChecked(self.app_settings.review_hud.show_diff)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Action", "Key", "Role", "Note"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -131,6 +175,7 @@ class SettingsWindow(QDialog):
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_dataset_group())
+        layout.addWidget(self._build_hud_group())
         layout.addWidget(self._build_prompt_group(), 1)
 
         mode_bar = QHBoxLayout()
@@ -161,6 +206,39 @@ class SettingsWindow(QDialog):
         path_row.addWidget(QLabel("Candidate store"))
         path_row.addWidget(self.dataset_store_path, 1)
         layout.addLayout(path_row)
+        return group
+
+    def _build_hud_group(self) -> QGroupBox:
+        group = QGroupBox("HUD")
+        layout = QVBoxLayout(group)
+
+        review_row = QHBoxLayout()
+        review_row.addWidget(QLabel("ReviewHUD pending"))
+        review_row.addWidget(self.review_pending_count)
+        review_row.addWidget(QLabel("position"))
+        review_row.addWidget(self.review_position)
+        review_row.addWidget(QLabel("width"))
+        review_row.addWidget(self.review_width)
+        review_row.addWidget(QLabel("height"))
+        review_row.addWidget(self.review_height)
+        layout.addLayout(review_row)
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("InputPanel position"))
+        input_row.addWidget(self.input_position)
+        input_row.addWidget(QLabel("width"))
+        input_row.addWidget(self.input_width)
+        input_row.addWidget(QLabel("height"))
+        input_row.addWidget(self.input_height)
+        layout.addLayout(input_row)
+
+        toggle_row = QHBoxLayout()
+        toggle_row.addWidget(self.always_show_review_hud)
+        toggle_row.addWidget(self.auto_remove_accepted)
+        toggle_row.addWidget(self.show_original)
+        toggle_row.addWidget(self.show_diff)
+        toggle_row.addStretch(1)
+        layout.addLayout(toggle_row)
         return group
 
     def _build_prompt_group(self) -> QGroupBox:
@@ -324,6 +402,21 @@ class SettingsWindow(QDialog):
                 capture_enabled=self.dataset_capture_checkbox.isChecked(),
                 capture_store_path=self.dataset_store_path.text().strip(),
             ),
+            review_hud=ReviewHUDSettings(
+                visible_pending_count=int(self.review_pending_count.currentData()),
+                position=str(self.review_position.currentData()),
+                width=self.review_width.value(),
+                height=self.review_height.value(),
+                auto_remove_accepted=self.auto_remove_accepted.isChecked(),
+                show_original=self.show_original.isChecked(),
+                show_diff=self.show_diff.isChecked(),
+                always_show=self.always_show_review_hud.isChecked(),
+            ),
+            input_panel=InputPanelSettings(
+                position=str(self.input_position.currentData()),
+                width=self.input_width.value(),
+                height=self.input_height.value(),
+            ),
         )
         try:
             save_settings(self.app_settings)
@@ -341,3 +434,10 @@ class SettingsWindow(QDialog):
     def _selected_prompt_profile_name(self) -> str | None:
         profile_name = self.prompt_profile_combo.currentData()
         return profile_name if isinstance(profile_name, str) else None
+
+    @staticmethod
+    def _spin_box(value: int, minimum: int, maximum: int) -> QSpinBox:
+        box = QSpinBox()
+        box.setRange(minimum, maximum)
+        box.setValue(value)
+        return box

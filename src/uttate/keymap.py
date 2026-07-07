@@ -328,6 +328,14 @@ DEFAULT_BINDINGS: list[KeyBinding] = [
         "In Candidate edit mode this cancels the edit and returns to Review mode.",
     ),
     KeyBinding(
+        GLOBAL_MODE,
+        "toggle_debug_console",
+        "Toggle debug console",
+        ("Ctrl+D",),
+        "Show or hide the diagnostic console.",
+        "Normal writing keeps this hidden so the HUD stays small.",
+    ),
+    KeyBinding(
         "input",
         "commit_chunk",
         "Commit chunk",
@@ -341,6 +349,13 @@ DEFAULT_BINDINGS: list[KeyBinding] = [
         "Insert newline",
         ("Shift+Enter",),
         "Insert a normal line break without committing the chunk.",
+    ),
+    KeyBinding(
+        "input",
+        "send_or_convert",
+        "Send or convert",
+        ("Ctrl+Enter",),
+        "Send the current InputPanel text through the same action as the Send button.",
     ),
     KeyBinding(
         "input",

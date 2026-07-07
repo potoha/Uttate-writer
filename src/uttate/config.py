@@ -39,11 +39,36 @@ class DatasetCaptureSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewHUDSettings:
+    """Compact review HUD preferences."""
+
+    visible_pending_count: int = 3
+    position: str = "bottom_right"
+    width: int = 420
+    height: int = 320
+    auto_remove_accepted: bool = True
+    show_original: bool = True
+    show_diff: bool = False
+    always_show: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class InputPanelSettings:
+    """Transient input panel preferences."""
+
+    position: str = "bottom_center"
+    width: int = 560
+    height: int = 160
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     """Application settings with safe OSS defaults."""
 
     provider: ProviderSettings = field(default_factory=ProviderSettings)
     dataset: DatasetCaptureSettings = field(default_factory=DatasetCaptureSettings)
+    review_hud: ReviewHUDSettings = field(default_factory=ReviewHUDSettings)
+    input_panel: InputPanelSettings = field(default_factory=InputPanelSettings)
 
 
 def default_settings_path() -> Path:
@@ -94,9 +119,19 @@ def load_settings(path: Path | None = None, *, env_path: Path | None = None) -> 
     if not isinstance(raw_dataset, dict):
         raise ValueError("The dataset setting must be a JSON object.")
 
+    raw_review_hud = raw_data.get("review_hud", {})
+    if not isinstance(raw_review_hud, dict):
+        raise ValueError("The review_hud setting must be a JSON object.")
+
+    raw_input_panel = raw_data.get("input_panel", {})
+    if not isinstance(raw_input_panel, dict):
+        raise ValueError("The input_panel setting must be a JSON object.")
+
     return AppSettings(
         provider=_provider_from_sources(raw_provider, merged_env),
         dataset=_dataset_from_sources(raw_dataset, merged_env),
+        review_hud=_review_hud_from_sources(raw_review_hud),
+        input_panel=_input_panel_from_sources(raw_input_panel),
     )
 
 
@@ -155,6 +190,49 @@ def _dataset_from_sources(
     )
 
 
+def _review_hud_from_sources(raw_review_hud: dict[str, Any]) -> ReviewHUDSettings:
+    defaults = ReviewHUDSettings()
+    visible_pending_count = _choice_int_value(
+        raw_review_hud,
+        "visible_pending_count",
+        defaults.visible_pending_count,
+        {1, 3, 5},
+    )
+    return ReviewHUDSettings(
+        visible_pending_count=visible_pending_count,
+        position=_choice_string_value(
+            raw_review_hud,
+            "position",
+            defaults.position,
+            {"bottom_right", "bottom_center", "top_right"},
+        ),
+        width=_positive_int_value(raw_review_hud, "width", defaults.width),
+        height=_positive_int_value(raw_review_hud, "height", defaults.height),
+        auto_remove_accepted=_bool_value(
+            raw_review_hud,
+            "auto_remove_accepted",
+            defaults.auto_remove_accepted,
+        ),
+        show_original=_bool_value(raw_review_hud, "show_original", defaults.show_original),
+        show_diff=_bool_value(raw_review_hud, "show_diff", defaults.show_diff),
+        always_show=_bool_value(raw_review_hud, "always_show", defaults.always_show),
+    )
+
+
+def _input_panel_from_sources(raw_input_panel: dict[str, Any]) -> InputPanelSettings:
+    defaults = InputPanelSettings()
+    return InputPanelSettings(
+        position=_choice_string_value(
+            raw_input_panel,
+            "position",
+            defaults.position,
+            {"bottom_center", "bottom_right", "top_right"},
+        ),
+        width=_positive_int_value(raw_input_panel, "width", defaults.width),
+        height=_positive_int_value(raw_input_panel, "height", defaults.height),
+    )
+
+
 def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
     """Persist non-secret settings as human-readable UTF-8 JSON."""
 
@@ -169,6 +247,8 @@ def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
             {
                 "provider": provider_data,
                 "dataset": asdict(settings.dataset),
+                "review_hud": asdict(settings.review_hud),
+                "input_panel": asdict(settings.input_panel),
             },
             settings_file,
             ensure_ascii=False,
@@ -182,6 +262,32 @@ def _string_value(values: dict[str, Any], key: str, default: str) -> str:
     value = values.get(key, default)
     if not isinstance(value, str):
         raise ValueError(f"The {key} setting must be a string.")
+    return value
+
+
+def _choice_string_value(
+    values: dict[str, Any],
+    key: str,
+    default: str,
+    allowed: set[str],
+) -> str:
+    value = _string_value(values, key, default)
+    if value not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(f"The {key} setting must be one of: {allowed_text}.")
+    return value
+
+
+def _choice_int_value(
+    values: dict[str, Any],
+    key: str,
+    default: int,
+    allowed: set[int],
+) -> int:
+    value = _positive_int_value(values, key, default)
+    if value not in allowed:
+        allowed_text = ", ".join(str(item) for item in sorted(allowed))
+        raise ValueError(f"The {key} setting must be one of: {allowed_text}.")
     return value
 
 

@@ -5,7 +5,9 @@ import pytest
 from uttate.config import (
     AppSettings,
     DatasetCaptureSettings,
+    InputPanelSettings,
     ProviderSettings,
+    ReviewHUDSettings,
     load_settings,
     save_settings,
 )
@@ -20,6 +22,10 @@ def test_missing_settings_uses_local_ai_defaults(tmp_path, monkeypatch) -> None:
     assert settings.provider.model == ""
     assert settings.provider.gemini_model == "gemini-2.5-flash-lite"
     assert settings.dataset.capture_enabled is False
+    assert settings.review_hud.visible_pending_count == 3
+    assert settings.review_hud.position == "bottom_right"
+    assert settings.review_hud.always_show is False
+    assert settings.input_panel.position == "bottom_center"
 
 
 def test_env_file_overrides_provider_and_loads_dummy_gemini_key(tmp_path, monkeypatch) -> None:
@@ -118,6 +124,21 @@ def test_settings_round_trip(tmp_path) -> None:
             capture_enabled=True,
             capture_store_path=str(tmp_path / "candidates.jsonl"),
         ),
+        review_hud=ReviewHUDSettings(
+            visible_pending_count=5,
+            position="top_right",
+            width=500,
+            height=360,
+            auto_remove_accepted=False,
+            show_original=False,
+            show_diff=True,
+            always_show=True,
+        ),
+        input_panel=InputPanelSettings(
+            position="bottom_right",
+            width=640,
+            height=180,
+        ),
     )
 
     written_path = save_settings(expected, settings_path)
@@ -130,6 +151,13 @@ def test_settings_round_trip(tmp_path) -> None:
     assert loaded.provider.type == "openai"
     assert loaded.dataset.capture_enabled is True
     assert loaded.dataset.capture_store_path == str(tmp_path / "candidates.jsonl")
+    assert loaded.review_hud.visible_pending_count == 5
+    assert loaded.review_hud.position == "top_right"
+    assert loaded.review_hud.auto_remove_accepted is False
+    assert loaded.review_hud.show_original is False
+    assert loaded.review_hud.show_diff is True
+    assert loaded.review_hud.always_show is True
+    assert loaded.input_panel.width == 640
 
 
 def test_dataset_capture_env_overrides_settings(tmp_path, monkeypatch) -> None:

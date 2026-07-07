@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
 from uttate.addons.dataset_curator import add_candidate
-from uttate.config import AppSettings, ProviderSettings, default_dataset_capture_path
+from uttate.config import AppSettings, ProviderSettings, default_dataset_capture_path, save_settings
 from uttate.keymap import GLOBAL_MODE, KeyConfig
 from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
@@ -24,8 +24,10 @@ from uttate.prompts.registry import LocalAIPromptRegistry
 from uttate.providers.base import ConversionProvider, ProviderError
 from uttate.providers.factory import create_conversion_provider
 from uttate.ui.chunk_list import ChunkListWidget
+from uttate.ui.debug_console import DebugConsole
 from uttate.ui.input_panel import InputPanel
 from uttate.ui.provider_panel import ProviderPanel
+from uttate.ui.review_hud import ReviewHUD, is_hud_chunk
 from uttate.ui.review_panel import ReviewPanel
 from uttate.ui.settings_window import SettingsWindow
 
@@ -74,14 +76,34 @@ class MainWindow(QMainWindow):
 
         self.chunk_list = ChunkListWidget()
         self.provider_panel = ProviderPanel(self.settings.provider)
-        self.input_panel = InputPanel(self.key_config)
+        self.input_panel = InputPanel(
+            self.key_config,
+            self.settings.provider,
+            self.settings.input_panel,
+        )
         self.review_panel = ReviewPanel()
+        self.review_hud = ReviewHUD(self.settings.review_hud)
+        self.debug_console = DebugConsole(self.provider_panel, self.chunk_list, self.review_panel)
+        self.review_hud.setWindowFlag(Qt.WindowType.Window, True)
+        self.input_panel.setWindowFlag(Qt.WindowType.Window, True)
+        self.debug_console.setWindowFlag(Qt.WindowType.Window, True)
+        self.review_hud.setWindowTitle("Uttate ReviewHUD")
+        self.debug_console.setWindowTitle("Uttate DebugConsole")
         self._build_layout()
         self._connect_signals()
         self._refresh_global_shortcuts()
         self._apply_style()
         self.statusBar().showMessage("Ready")
-        self.input_panel.editor.setFocus()
+        self._update_provider_ui()
+        self._refresh_review_hud()
+        self.show_input_panel()
+
+    def show(self) -> None:  # type: ignore[override]
+        """Keep the QMainWindow as a hidden root and show managed windows instead."""
+
+        self.hide()
+        self.show_input_panel()
+        self.ensure_review_hud_visible()
 
     @Slot(str)
     def commit_chunk(self, raw_text: str) -> None:
@@ -92,7 +114,27 @@ class MainWindow(QMainWindow):
         self.chunk_list.setCurrentRow(self.chunk_list.count() - 1)
         self.chunk_list.scrollToBottom()
         self.conversion_queue.enqueue(chunk)
+        self._refresh_review_hud(selected_chunk_id=chunk.id)
         self.input_panel.editor.setFocus()
+
+    @Slot(str)
+    def _send_input_panel_text(self, raw_text: str) -> None:
+        self._send_input_panel(raw_text)
+
+    @Slot()
+    def _send_input_panel(self, raw_text: str | None = None) -> None:
+        text = self.input_panel.editor.toPlainText() if raw_text is None else raw_text
+        if not text.strip():
+            return
+        self.input_panel.set_send_enabled(False)
+        try:
+            if self.mode == ConsoleMode.CANDIDATE_EDIT:
+                self._reconvert_candidate_edit()
+            else:
+                self.input_panel.editor.clear()
+                self.commit_chunk(text)
+        finally:
+            self.input_panel.set_send_enabled(True)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API name
         if event.type() != QEvent.Type.KeyPress:
@@ -111,6 +153,10 @@ class MainWindow(QMainWindow):
             self._toggle_mode()
             key_event.accept()
             return True
+        if global_action == "toggle_debug_console":
+            self._toggle_debug_console()
+            key_event.accept()
+            return True
 
         if self.mode == ConsoleMode.CANDIDATE_EDIT and self._handle_candidate_edit_key(key_event):
             key_event.accept()
@@ -123,31 +169,41 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         self.conversion_queue.wait_for_done(2000)
+        for window in (
+            self.review_hud,
+            self.input_panel,
+            self.debug_console,
+            self._settings_window,
+        ):
+            if window is not None:
+                window.close()
         super().closeEvent(event)
 
     def _build_layout(self) -> None:
         console = QWidget()
         layout = QVBoxLayout(console)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(6)
-        layout.addWidget(self.provider_panel)
-        layout.addWidget(self.chunk_list, 1)
-        layout.addWidget(self.input_panel)
-        self.review_panel.setParent(self)
-        self.review_panel.hide()
+        layout.setContentsMargins(0, 0, 0, 0)
         self.setCentralWidget(console)
 
     def _connect_signals(self) -> None:
         self.input_panel.editor.commit_requested.connect(self.commit_chunk)
-        self.input_panel.editor.escape_on_empty_requested.connect(self.hide)
+        self.input_panel.editor.send_requested.connect(self._send_input_panel_text)
+        self.input_panel.send_requested.connect(self._send_input_panel)
+        self.input_panel.editor.escape_on_empty_requested.connect(self.input_panel.close)
         self.input_panel.editor.mode_toggle_requested.connect(self._toggle_mode)
+        self.input_panel.provider_change_requested.connect(self._change_provider)
+        self.input_panel.settings_requested.connect(self._open_settings_window)
         self.provider_panel.provider_change_requested.connect(self._change_provider)
         self.provider_panel.settings_requested.connect(self._open_settings_window)
+        self.review_hud.always_show_changed.connect(self._set_review_hud_always_show)
         self.chunk_list.currentItemChanged.connect(self._show_selected_chunk)
         self.conversion_queue.chunk_updated.connect(self._refresh_chunk)
         self.conversion_queue.processing_count_changed.connect(self._show_processing_count)
         self.input_panel.editor.installEventFilter(self)
         self.chunk_list.installEventFilter(self)
+        self.review_hud.installEventFilter(self)
+        self.review_hud.queue.installEventFilter(self)
+        self.input_panel.installEventFilter(self)
 
     @Slot(str)
     def _change_provider(self, provider_type: str) -> None:
@@ -167,6 +223,7 @@ class MainWindow(QMainWindow):
         self.settings = replace(self.settings, provider=next_settings)
         self.conversion_queue.set_provider(provider)
         self.provider_panel.set_settings(next_settings)
+        self._update_provider_ui()
         self.statusBar().showMessage(f"Provider: {provider_type} / {_model_text(next_settings)}")
 
     @Slot()
@@ -183,6 +240,7 @@ class MainWindow(QMainWindow):
         self.chunk_list.update_chunk(chunk)
         if self.chunk_list.selected_chunk_id() == chunk_id:
             self.review_panel.show_chunk(chunk)
+        self._refresh_review_hud(selected_chunk_id=chunk_id)
         if self.mode == ConsoleMode.REVIEW and self._selected_chunk() is None:
             self._select_actionable_chunk(prefer_latest=True)
 
@@ -208,7 +266,55 @@ class MainWindow(QMainWindow):
         if self.mode == ConsoleMode.CANDIDATE_EDIT:
             self._cancel_candidate_edit()
             return
+        if self.settings.review_hud.always_show:
+            self.mode = ConsoleMode.REVIEW
+            self.input_panel.set_mode_label(ConsoleMode.REVIEW.value)
+            self.show_review_hud()
+            self.statusBar().showMessage("ReviewHUD shown")
+            return
         self._set_mode(ConsoleMode.REVIEW if self.mode == ConsoleMode.INPUT else ConsoleMode.INPUT)
+
+    @Slot()
+    def _toggle_debug_console(self) -> None:
+        if self.debug_console.isVisible():
+            self.debug_console.close()
+            self.statusBar().showMessage("Debug console hidden")
+            return
+        self.show_debug_console()
+        self.statusBar().showMessage("Debug console shown")
+
+    def show_review_hud(self) -> None:
+        self._refresh_review_hud()
+        self._show_and_focus(self.review_hud)
+
+    def ensure_review_hud_visible(self) -> None:
+        if self.settings.review_hud.always_show:
+            self._show_and_focus(self.review_hud)
+
+    def show_input_panel(
+        self,
+        *,
+        mode: ConsoleMode | None = None,
+        initial_text: str | None = None,
+    ) -> None:
+        if mode is not None:
+            self.mode = mode
+            self.input_panel.set_mode_label(mode.value)
+        if initial_text is not None:
+            self.input_panel.editor.setPlainText(initial_text)
+            self.input_panel.editor.moveCursor(QTextCursor.MoveOperation.End)
+        self._update_provider_ui()
+        self._show_and_focus(self.input_panel)
+        self.input_panel.editor.setFocus()
+
+    def show_debug_console(self) -> None:
+        self._show_and_focus(self.debug_console)
+
+    @staticmethod
+    def _show_and_focus(window: QWidget) -> None:
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _set_mode(self, mode: ConsoleMode) -> None:
         self.mode = mode
@@ -216,21 +322,24 @@ class MainWindow(QMainWindow):
         if mode == ConsoleMode.REVIEW:
             if not self._selected_chunk() or not self._is_actionable(self._selected_chunk()):
                 self._select_actionable_chunk(prefer_latest=True)
-            self.chunk_list.setFocus()
+            self.show_review_hud()
+            self.review_hud.queue.setFocus()
             self.statusBar().showMessage("Review mode")
         elif mode == ConsoleMode.CANDIDATE_EDIT:
-            self.input_panel.editor.setFocus()
+            self.show_input_panel(mode=mode)
             self.statusBar().showMessage(
                 "Candidate edit - Enter accepts, Ctrl+Enter reconverts, Esc cancels"
             )
         else:
-            self.input_panel.editor.setFocus()
+            self.show_input_panel(mode=mode)
             self.statusBar().showMessage("Input mode")
 
     def _handle_review_key(self, event: QKeyEvent) -> bool:
         action = self.key_config.action_for("review", event)
         if action == "return_to_input":
-            self._set_mode(ConsoleMode.INPUT)
+            if not self.settings.review_hud.always_show:
+                self.review_hud.hide()
+            self.show_input_panel(mode=ConsoleMode.INPUT)
             return True
         if action == "move_previous_chunk":
             self._move_review_selection(-1)
@@ -287,7 +396,7 @@ class MainWindow(QMainWindow):
             self.key_config,
             self.settings,
             self._prompt_registry(),
-            self,
+            None,
         )
         self._settings_window.key_config_saved.connect(self._apply_key_config)
         self._settings_window.app_settings_saved.connect(self._apply_app_settings)
@@ -304,7 +413,31 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _apply_app_settings(self, settings: AppSettings) -> None:
         self.settings = settings
+        self.review_hud.set_settings(settings.review_hud)
+        self.input_panel.set_settings(settings.input_panel)
+        self._refresh_review_hud()
+        self._update_provider_ui()
+        self.ensure_review_hud_visible()
         self.statusBar().showMessage("Settings saved")
+
+    @Slot(bool)
+    def _set_review_hud_always_show(self, enabled: bool) -> None:
+        if self.settings.review_hud.always_show == enabled:
+            return
+        self.settings = replace(
+            self.settings,
+            review_hud=replace(self.settings.review_hud, always_show=enabled),
+        )
+        self.review_hud.set_settings(self.settings.review_hud)
+        if self._settings_window is not None:
+            self._settings_window.app_settings = self.settings
+            self._settings_window.always_show_review_hud.setChecked(enabled)
+        try:
+            save_settings(self.settings)
+        except OSError as error:
+            self.statusBar().showMessage(f"ReviewHUD setting save failed: {error}")
+        if enabled:
+            self.show_review_hud()
 
     @Slot(object)
     def _apply_local_ai_prompts(self, prompt_registry: LocalAIPromptRegistry) -> None:
@@ -323,6 +456,7 @@ class MainWindow(QMainWindow):
             return
         self.conversion_queue.set_provider(provider)
         self.provider_panel.set_settings(self.settings.provider)
+        self._update_provider_ui()
         self.statusBar().showMessage("Local AI prompts saved and applied")
 
     def _prompt_registry(self) -> LocalAIPromptRegistry:
@@ -343,12 +477,53 @@ class MainWindow(QMainWindow):
             shortcut = QShortcut(sequence, self)
             shortcut.activated.connect(self._open_settings_window)
             self._global_shortcuts.append(shortcut)
+        for key in self.key_config.keys_for(GLOBAL_MODE, "toggle_debug_console"):
+            sequence = QKeySequence(key)
+            if sequence.isEmpty():
+                continue
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(self._toggle_debug_console)
+            self._global_shortcuts.append(shortcut)
 
     def _selected_chunk(self) -> Chunk | None:
-        chunk_id = self.chunk_list.selected_chunk_id()
+        chunk_id = self.review_hud.selected_chunk_id() or self.chunk_list.selected_chunk_id()
         if chunk_id is None:
             return None
         return self.document.chunk_by_id(chunk_id)
+
+    def _select_chunk(self, chunk_id: str) -> None:
+        for row in range(self.chunk_list.count()):
+            item = self.chunk_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == chunk_id:
+                self.chunk_list.setCurrentRow(row)
+                self.chunk_list.scrollToItem(item)
+                break
+        self.review_panel.show_chunk(self.document.chunk_by_id(chunk_id))
+        self._refresh_review_hud(selected_chunk_id=chunk_id)
+
+    def _refresh_review_hud(self, *, selected_chunk_id: str | None = None) -> None:
+        chunk_ids = [
+            chunk.id
+            for chunk in self.document.chunks
+            if is_hud_chunk(
+                chunk,
+                auto_remove_accepted=self.settings.review_hud.auto_remove_accepted,
+                editing_chunk_id=self._editing_chunk_id,
+            )
+        ]
+        if selected_chunk_id is not None and selected_chunk_id not in chunk_ids:
+            selected_chunk_id = chunk_ids[0] if chunk_ids else None
+        self.review_hud.set_chunks(
+            chunk_ids,
+            self.document.chunk_by_id,
+            selected_chunk_id=selected_chunk_id,
+            editing_chunk_id=self._editing_chunk_id,
+        )
+        self.ensure_review_hud_visible()
+
+    def _update_provider_ui(self) -> None:
+        self.provider_panel.set_settings(self.settings.provider)
+        self.input_panel.set_provider_settings(self.settings.provider)
 
     @staticmethod
     def _is_actionable(chunk: Chunk | None) -> bool:
@@ -360,12 +535,9 @@ class MainWindow(QMainWindow):
 
     def _actionable_rows(self) -> list[int]:
         rows: list[int] = []
-        for row in range(self.chunk_list.count()):
-            item = self.chunk_list.item(row)
-            chunk_id = item.data(Qt.ItemDataRole.UserRole)
-            chunk = self.document.chunk_by_id(chunk_id)
+        for index, chunk in enumerate(self.document.chunks):
             if self._is_actionable(chunk):
-                rows.append(row)
+                rows.append(index)
         return rows
 
     def _select_actionable_chunk(self, *, prefer_latest: bool) -> None:
@@ -373,22 +545,26 @@ class MainWindow(QMainWindow):
         if not rows:
             self.statusBar().showMessage("Review mode - no pending or error chunks")
             return
-        self.chunk_list.setCurrentRow(rows[-1] if prefer_latest else rows[0])
-        self.chunk_list.scrollToItem(self.chunk_list.currentItem())
+        chunk = self.document.chunks[rows[-1] if prefer_latest else rows[0]]
+        self._select_chunk(chunk.id)
 
     def _move_review_selection(self, direction: int) -> None:
         rows = self._actionable_rows()
         if not rows:
             self.statusBar().showMessage("Review mode - no pending or error chunks")
             return
-        current_row = self.chunk_list.currentRow()
+        selected = self._selected_chunk()
+        current_row = (
+            self.document.chunks.index(selected)
+            if selected in self.document.chunks
+            else -1
+        )
         if current_row not in rows:
-            self.chunk_list.setCurrentRow(rows[-1])
+            self._select_chunk(self.document.chunks[rows[-1]].id)
             return
 
         next_index = (rows.index(current_row) + direction) % len(rows)
-        self.chunk_list.setCurrentRow(rows[next_index])
-        self.chunk_list.scrollToItem(self.chunk_list.currentItem())
+        self._select_chunk(self.document.chunks[rows[next_index]].id)
 
     def _cycle_candidate_or_move_next(self) -> None:
         chunk = self._selected_chunk()
@@ -396,7 +572,8 @@ class MainWindow(QMainWindow):
             self._move_review_selection(1)
             return
         if chunk and chunk.candidate_1 and chunk.candidate_2:
-            next_index = 0 if self.chunk_list.candidate_index(chunk.id) == 1 else 1
+            next_index = 0 if self.review_hud.candidate_index(chunk.id) == 1 else 1
+            self.review_hud.set_candidate_index(chunk.id, next_index)
             self.chunk_list.set_candidate_index(chunk.id, next_index)
             self.chunk_list.update_chunk(chunk)
             self.review_panel.show_chunk(chunk)
@@ -423,6 +600,7 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(text)
         self.chunk_list.update_chunk(chunk)
         self.review_panel.show_chunk(chunk)
+        self._refresh_review_hud()
         message = "Accepted and copied to clipboard"
         if record_dataset:
             try:
@@ -447,6 +625,7 @@ class MainWindow(QMainWindow):
 
         self.chunk_list.update_chunk(chunk)
         self.review_panel.show_chunk(chunk)
+        self._refresh_review_hud()
         self.statusBar().showMessage("Rejected")
         self._select_actionable_chunk(prefer_latest=True)
 
@@ -454,9 +633,10 @@ class MainWindow(QMainWindow):
         chunk = self._selected_chunk()
         if chunk is None:
             return
-        self.input_panel.editor.setPlainText(self._selected_candidate_text(chunk))
-        self.input_panel.editor.moveCursor(QTextCursor.MoveOperation.End)
-        self._set_mode(ConsoleMode.INPUT)
+        self.show_input_panel(
+            mode=ConsoleMode.INPUT,
+            initial_text=self._selected_candidate_text(chunk),
+        )
 
     def _begin_candidate_edit(self) -> None:
         chunk = self._selected_chunk()
@@ -471,10 +651,9 @@ class MainWindow(QMainWindow):
 
         self._saved_input_text = self.input_panel.editor.toPlainText()
         self._editing_chunk_id = chunk.id
-        self._editing_candidate_index = self.chunk_list.candidate_index(chunk.id)
-        self.input_panel.editor.setPlainText(candidate_text)
-        self.input_panel.editor.moveCursor(QTextCursor.MoveOperation.End)
-        self._set_mode(ConsoleMode.CANDIDATE_EDIT)
+        self._editing_candidate_index = self.review_hud.candidate_index(chunk.id)
+        self._refresh_review_hud(selected_chunk_id=chunk.id)
+        self.show_input_panel(mode=ConsoleMode.CANDIDATE_EDIT, initial_text=candidate_text)
 
     def _accept_candidate_edit(self) -> None:
         chunk = self._editing_chunk()
@@ -499,6 +678,7 @@ class MainWindow(QMainWindow):
         self.chunk_list.update_chunk(chunk)
         self.review_panel.show_chunk(chunk)
         self._restore_input_after_candidate_edit()
+        self._refresh_review_hud()
         self._set_mode(ConsoleMode.REVIEW)
         self.statusBar().showMessage("Edited candidate accepted and copied to clipboard")
 
@@ -529,11 +709,13 @@ class MainWindow(QMainWindow):
         self.chunk_list.update_chunk(chunk)
         self.review_panel.show_chunk(chunk)
         self._restore_input_after_candidate_edit()
+        self._refresh_review_hud(selected_chunk_id=chunk.id)
         self._set_mode(ConsoleMode.REVIEW)
         self.statusBar().showMessage("Edited candidate sent for reconversion")
 
     def _cancel_candidate_edit(self) -> None:
         self._restore_input_after_candidate_edit()
+        self._refresh_review_hud()
         self._set_mode(ConsoleMode.REVIEW)
         self.statusBar().showMessage("Candidate edit canceled")
 
@@ -550,15 +732,16 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Resend failed: {error}")
             return
         self.chunk_list.update_chunk(chunk)
+        self._refresh_review_hud(selected_chunk_id=chunk.id)
         self.statusBar().showMessage("Resent chunk")
 
     def _selected_candidate_text(self, chunk: Chunk) -> str:
-        if self.chunk_list.candidate_index(chunk.id) == 1 and chunk.candidate_2:
+        if self.review_hud.candidate_index(chunk.id) == 1 and chunk.candidate_2:
             return chunk.candidate_2
         return chunk.candidate_1 or chunk.adopted_text or chunk.raw_text
 
     def _add_dataset_candidate(self, chunk: Chunk, selected_text: str) -> dict[str, object]:
-        selected_index = self.chunk_list.candidate_index(chunk.id)
+        selected_index = self.review_hud.candidate_index(chunk.id)
         literal = selected_text if selected_index == 0 else chunk.candidate_1 or selected_text
         natural = selected_text if selected_index == 1 else chunk.candidate_2 or selected_text
         tags = ["review-accept"]

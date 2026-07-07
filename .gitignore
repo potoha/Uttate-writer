@@ -19,6 +19,7 @@ htmlcov/
 .artifacts/
 logs/
 agent-work-logs/
+AGENT-tmp/
 *.log
 data/sft/
 data/datasets/

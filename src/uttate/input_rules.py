@@ -48,6 +48,7 @@ TAG_KINDS = {
     "=": ProtectedKind.PRESERVE_ENGLISH,
     "$": ProtectedKind.HIRAGANA,
 }
+_N_SEPARATOR_CHARS = "+＋"
 
 
 def parse_protected_input(raw_text: str) -> ProtectedInput:
@@ -222,6 +223,11 @@ def romaji_to_hiragana(text: str) -> str:
 
         if char == "n":
             next_char = lowered[index + 1] if index + 1 < len(lowered) else ""
+            after_next = lowered[index + 2] if index + 2 < len(lowered) else ""
+            if next_char in _N_SEPARATOR_CHARS and after_next.isalpha():
+                result.append("ん")
+                index += 2
+                continue
             if not next_char or next_char not in "aiueoyn":
                 result.append("ん")
                 index += 1

@@ -88,6 +88,23 @@ def test_short_particles_are_handled() -> None:
     assert result.mechanical_normalized == "これは input の test だね"
 
 
+def test_n_plus_marks_moraic_n_before_y_sound() -> None:
+    result = MechanicalReadingNormalizer().normalize("in+you")
+
+    assert result.mechanical_normalized == "いんよう"
+    assert result.ambiguous_spans == ()
+
+
+def test_unmarked_n_y_keeps_primary_reading_and_records_boundary_candidate() -> None:
+    result = MechanicalReadingNormalizer().normalize("inyou")
+
+    assert result.mechanical_normalized == "いにょう"
+    assert result.ambiguous_spans
+    assert result.ambiguous_spans[0]["raw"] == "inyou"
+    readings = {candidate["reading"] for candidate in result.ambiguous_spans[0]["candidates"]}
+    assert readings == {"いにょう", "いんよう"}
+
+
 def test_suspicious_token_is_recorded() -> None:
     result = MechanicalReadingNormalizer().normalize("nyuryok")
 

@@ -61,6 +61,8 @@ def test_protected_input_can_be_masked_and_restored() -> None:
 def test_romaji_helpers_cover_tag_conversions() -> None:
     assert romaji_to_katakana("dedodamu") == "デドダム"
     assert romaji_to_hiragana("tokiori") == "ときおり"
+    assert romaji_to_hiragana("in+you") == "いんよう"
+    assert romaji_to_hiragana("in＋you") == "いんよう"
 
 
 def test_conversion_prompt_includes_protected_terms_and_clean_input() -> None:

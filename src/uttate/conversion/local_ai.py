@@ -88,8 +88,9 @@ LOCAL_AI_STAGE2_SCHEMA: JsonObject = {
 
 _PROTECTED_PLACEHOLDER_PATTERN = re.compile(r"__UTTATE_PROTECTED_\d+__")
 _SEGMENT_PATTERN = re.compile(r"__UTTATE_PROTECTED_\d+__|\s*\|\s*|[^\s|]+|\s+")
-_ASCII_WORD_PATTERN = re.compile(r"[A-Za-z]+")
+_ASCII_WORD_PATTERN = re.compile(r"[A-Za-z]+(?:[+＋][A-Za-z]+)*")
 _ROMAJI_KEYS = tuple(sorted(ROMAJI_TABLE, key=len, reverse=True))
+_N_SEPARATOR_CHARS = "+＋"
 
 _PARTICLE_READINGS = {
     "ha": "は",
@@ -659,6 +660,28 @@ def _normalize_ascii_token(token: str) -> TokenReading:
 
     strict = _strict_romaji_to_hiragana(lowered) if token.islower() else None
     if strict is not None:
+        n_y_candidates = _n_y_ambiguity_candidates(lowered, strict)
+        if n_y_candidates:
+            return TokenReading(
+                strict,
+                "japanese_romaji",
+                0.78,
+                candidates=(
+                    {
+                        "reading": strict,
+                        "type": "japanese_romaji",
+                        "reason": "Unmarked n+y romaji candidate",
+                    },
+                    *(
+                        {
+                            "reading": candidate,
+                            "type": "japanese_romaji_n_separator",
+                            "reason": "Treat n before y as ん boundary",
+                        }
+                        for candidate in n_y_candidates
+                    ),
+                ),
+            )
         return TokenReading(strict, "japanese_romaji", 0.95)
 
     mixed = _split_mixed_ascii_token(token)
@@ -790,6 +813,10 @@ def _strict_romaji_to_hiragana(token: str) -> str | None:
         if value[index] == "n":
             next_char = value[index + 1] if index + 1 < len(value) else ""
             after_next = value[index + 2] if index + 2 < len(value) else ""
+            if next_char in _N_SEPARATOR_CHARS and after_next.isalpha():
+                reading.append("ん")
+                index += 2
+                continue
             if not next_char:
                 reading.append("ん")
                 index += 1
@@ -808,6 +835,20 @@ def _strict_romaji_to_hiragana(token: str) -> str | None:
         reading.append(ROMAJI_TABLE[syllable])
         index += len(syllable)
     return "".join(reading)
+
+
+def _n_y_ambiguity_candidates(token: str, primary_reading: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for index in range(len(token) - 2):
+        if token[index] != "n" or token[index + 1] != "y":
+            continue
+        if token[index + 2] not in "auo":
+            continue
+        marked = f"{token[: index + 1]}+{token[index + 1 :]}"
+        reading = _strict_romaji_to_hiragana(marked)
+        if reading is not None and reading != primary_reading:
+            candidates.append(reading)
+    return tuple(dict.fromkeys(candidates))
 
 
 def _is_double_consonant(value: str, index: int) -> bool:

@@ -145,6 +145,8 @@ API Providerへ送る前に、特殊タグで保護した文字列は `__UTTATE_
 - Stage 1.5: 曖昧な短い語などがある場合だけ、ローカルモデルに候補選択を依頼
 - Stage 2: 正規化済みのかな・英語混じり文を、ローカルモデルで漢字かな交じり候補へ変換
 
+撥音 `ん` の直後にや行を続けたい場合は `+` を区切りとして使えます。たとえば `in+you` / `in＋you` は `いんよう` として扱います。区切りなしの `inyou` は `いにょう` を機械正規化の第一候補にしつつ、`いんよう` も曖昧候補としてStage 1.5へ渡します。
+
 送信文字列、前処理、API payload、受信後の復元、UI表示までの詳しい流れは [API Preprocessing Flow](docs/API_PREPROCESSING_FLOW.md) を参照してください。
 
 ### Local AI prompt profile

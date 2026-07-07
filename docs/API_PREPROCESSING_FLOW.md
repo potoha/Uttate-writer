@@ -79,6 +79,8 @@ Local AI は、LLM に rough input 全文の reading を生成させません。
 8. Stage 2 の返答JSONを `ProviderResult` に変換し、placeholderを復元する。
 9. Stage 2 が失敗、invalid JSON、placeholder欠落、空候補などになった場合でも provider error だけにせず、`mechanical_normalized` を `mechanical_normalized` 候補として表示する。
 
+撥音 `ん` の区切りが必要な場合は `+` を使う。`in+you` / `in＋you` は `いんよう` に正規化する。区切りなしの `inyou` は primary path では `いにょう` とし、`いんよう` を `ambiguous_spans` の候補としてStage 1.5へ渡す。
+
 Stage 1 の内部結果例:
 
 入力:

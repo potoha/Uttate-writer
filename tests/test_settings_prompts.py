@@ -1,8 +1,30 @@
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QScrollArea
 
+from uttate.config import AppSettings, GeneralSettings
 from uttate.keymap import DEFAULT_BINDINGS, KeyConfig
 from uttate.prompts.registry import LocalAIPromptProfile, LocalAIPromptRegistry
 from uttate.ui.settings_window import SettingsWindow
+
+
+def test_settings_window_uses_tabs_with_scrollable_sections(qtbot) -> None:
+    window = SettingsWindow(
+        KeyConfig(DEFAULT_BINDINGS),
+        settings=AppSettings(general=GeneralSettings(language="en")),
+    )
+    qtbot.addWidget(window)
+
+    assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
+        "General",
+        "Appearance",
+        "HUD",
+        "Privacy / Dataset",
+        "Prompts",
+        "Shortcuts",
+    ]
+    for index in range(window.tabs.count()):
+        assert isinstance(window.tabs.widget(index), QScrollArea)
+    assert window.language_combo.currentData() == "en"
 
 
 def test_settings_window_applies_local_ai_prompt_profile(qtbot, tmp_path) -> None:

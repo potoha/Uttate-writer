@@ -51,6 +51,7 @@ class ReviewHUD(QWidget):
         self.meta_label.setObjectName("reviewHudMeta")
         self.preview_text = QPlainTextEdit()
         self.preview_text.setObjectName("preview-text")
+        self.preview_text.setProperty("class", "preview-text")
         self.preview_text.setReadOnly(True)
         self.original_text = QPlainTextEdit()
         self.original_text.setObjectName("original-text")
@@ -60,6 +61,7 @@ class ReviewHUD(QWidget):
         self.diff_text.setReadOnly(True)
         self.shortcut_bar = QLabel("↑/↓ select  Enter accept  F edit  R resend  Esc close")
         self.shortcut_bar.setObjectName("shortcut-bar")
+        self.shortcut_bar.setProperty("class", "shortcut-bar")
 
         details = QFrame()
         details.setObjectName("reviewHudDetails")

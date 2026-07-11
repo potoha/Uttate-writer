@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
+from uuid import uuid4
 
 Status = Literal["candidate", "approved", "rejected"]
 ExportMode = Literal["public", "private"]
+
+CURATOR_SCHEMA = "uttate.dataset.candidate"
+CURATOR_SCHEMA_VERSION = 1
 
 CHECK_KEYS = (
     "no_personal_info",
@@ -61,6 +66,8 @@ RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 class Candidate(TypedDict, total=False):
+    schema: str
+    schema_version: int
     id: str
     status: Status
     raw: str
@@ -91,6 +98,7 @@ def load_candidates(store: Path) -> list[Candidate]:
         return []
 
     candidates: list[Candidate] = []
+    row_kinds: set[str] = set()
     with store.open("r", encoding="utf-8") as file:
         for line_number, line in enumerate(file, 1):
             stripped = line.strip()
@@ -103,16 +111,16 @@ def load_candidates(store: Path) -> list[Candidate]:
                 raise ValueError(message) from exc
             if not isinstance(row, dict):
                 raise ValueError(f"Candidate row {line_number} must be a JSON object.")
+            row_kinds.add(_candidate_row_kind(row, line_number))
             candidates.append(_normalize_candidate(row))
+    if len(row_kinds) > 1:
+        raise ValueError(f"Mixed candidate schemas in {store}. Refusing to rewrite the store.")
     return candidates
 
 
 def save_candidates(store: Path, candidates: Iterable[Candidate]) -> None:
-    """Rewrite the JSONL store atomically enough for a local single-user MVP."""
-    store.parent.mkdir(parents=True, exist_ok=True)
-    with store.open("w", encoding="utf-8") as file:
-        for candidate in candidates:
-            file.write(json.dumps(candidate, ensure_ascii=False) + "\n")
+    """Durably replace the local candidate store."""
+    _atomic_write_jsonl(store, [_normalize_candidate(candidate) for candidate in candidates])
 
 
 def add_candidate(
@@ -199,11 +207,10 @@ def export_seeds(store: Path, output: Path, *, mode: ExportMode) -> int:
     else:
         raise ValueError(f"Unknown export mode: {mode}")
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as file:
-        for candidate in selected:
-            seed = {field: candidate[field] for field in SEED_FIELDS}
-            file.write(json.dumps(seed, ensure_ascii=False) + "\n")
+    _atomic_write_jsonl(
+        output,
+        [{field: candidate[field] for field in SEED_FIELDS} for candidate in selected],
+    )
     return len(selected)
 
 
@@ -353,6 +360,8 @@ def _normalize_candidate(row: dict[str, Any]) -> Candidate:
         raise ValueError(f"Unknown candidate status: {status}")
 
     candidate: Candidate = {
+        "schema": CURATOR_SCHEMA,
+        "schema_version": CURATOR_SCHEMA_VERSION,
         "id": str(row["id"]),
         "status": status,  # type: ignore[typeddict-item]
         "raw": str(row["raw"]),
@@ -368,6 +377,42 @@ def _normalize_candidate(row: dict[str, Any]) -> Candidate:
         "risk_notes": _string_list(row.get("risk_notes", [])),
     }
     return candidate
+
+
+def _candidate_row_kind(row: dict[str, Any], line_number: int) -> str:
+    """Validate the store format before a write can replace it."""
+    schema = row.get("schema")
+    version = row.get("schema_version")
+    if schema is not None or version is not None:
+        if schema != CURATOR_SCHEMA or version != CURATOR_SCHEMA_VERSION:
+            raise ValueError(
+                f"Candidate row {line_number} is not {CURATOR_SCHEMA} v{CURATOR_SCHEMA_VERSION}."
+            )
+        return "candidate-v1"
+    if "dataset_status" in row or "raw_input" in row:
+        raise ValueError(
+            f"Candidate row {line_number} is a dataset review item, not a curator candidate."
+        )
+    required = {"id", "status", "raw", "kana", "literal", "natural"}
+    if not required.issubset(row):
+        raise ValueError(f"Candidate row {line_number} has no recognizable candidate schema.")
+    return "candidate-legacy"
+
+
+def _atomic_write_jsonl(store: Path, rows: Iterable[dict[str, object]]) -> None:
+    """Durably replace a local JSONL file without first truncating it."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = store.parent / f".{store.name}.{uuid4().hex}.tmp"
+    try:
+        with temporary_path.open("x", encoding="utf-8") as file:
+            for row in rows:
+                file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, store)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _normalize_checks(raw: object) -> dict[str, bool]:

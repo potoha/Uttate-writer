@@ -1,5 +1,11 @@
 # Uttate Writer Project B: API Provider Branch
 
+> **履歴資料（現行の実装指示ではない）**
+>
+> 本書は旧Project B / API Provider Branchの計画です。2026年7月6日に当該ブランチは
+> mainへ統合されました。現在の仕様は[`project.md`](project.md)、安全性・保守性の実装順序は
+> [`docs/REFACTORING_PLAN.md`](docs/REFACTORING_PLAN.md)を参照してください。
+
 ## 0. このファイルの目的
 
 この文書は、Uttate Writer の **Project B / API Provider Branch** 用の計画書である。

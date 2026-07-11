@@ -96,6 +96,7 @@ class OpenAIProvider(ConversionProvider):
             "model": self.model,
             "instructions": self._system_prompt,
             "input": prompt.strip(),
+            "store": False,
             "temperature": 0.2,
             "max_output_tokens": 1024,
             "text": {

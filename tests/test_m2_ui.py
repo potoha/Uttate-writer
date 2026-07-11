@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 
@@ -7,8 +8,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
+from uttate.addons.dataset_collection import load_dataset_items
 from uttate.addons.dataset_curator import load_candidates
 from uttate.config import (
+    AppearanceSettings,
     AppSettings,
     DatasetCaptureSettings,
     ProviderSettings,
@@ -76,6 +79,25 @@ class DeterministicProvider:
         )
 
 
+class ContextRecordingProvider:
+    def __init__(self) -> None:
+        self.contexts: list[str] = []
+
+    def convert(
+        self,
+        raw_text: str,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> ProviderResult:
+        self.contexts.append(previous_context)
+        return ProviderResult(
+            candidates=(Candidate("faithful", f"変換: {raw_text}"),)[:candidate_count],
+            provider="context",
+            model="test",
+        )
+
+
 def submit(qtbot, window: MainWindow, text: str) -> None:
     window.input_panel.editor.setPlainText(text)
     qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_Return)
@@ -83,6 +105,21 @@ def submit(qtbot, window: MainWindow, text: str) -> None:
 
 def wait_until_idle(qtbot, window: MainWindow) -> None:
     qtbot.waitUntil(lambda: window.conversion_queue.active_count == 0, timeout=3000)
+
+
+def test_conversion_receives_bounded_accepted_context(qtbot) -> None:
+    provider = ContextRecordingProvider()
+    settings = AppSettings(provider=ProviderSettings(previous_context_chars=3))
+    window = MainWindow(provider, settings=settings)
+    qtbot.addWidget(window)
+
+    window.commit_chunk("first")
+    wait_until_idle(qtbot, window)
+    window.document.chunks[0].adopt("ABCDE")
+    window.commit_chunk("second")
+    wait_until_idle(qtbot, window)
+
+    assert provider.contexts == ["", "CDE"]
 
 
 def prompt_registry_for_tests(tmp_path) -> LocalAIPromptRegistry:
@@ -320,6 +357,61 @@ def test_settings_always_show_updates_review_hud(qtbot) -> None:
     assert window.review_hud.isVisible()
 
 
+def test_theme_settings_apply_to_independent_windows(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("UTTATE_CONFIG_DIR", str(tmp_path / "config"))
+    bg_path = tmp_path / "review-bg.png"
+    settings = AppSettings(
+        appearance=AppearanceSettings(
+            font_family="sans-serif",
+            review_font_size=18,
+            input_font_size=19,
+            queue_font_size=15,
+            shortcut_font_size=12,
+            review_bg_image_path=str(bg_path),
+            review_overlay=0.7,
+            review_corner_radius=14,
+        )
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    review_stylesheet = window.review_hud.styleSheet()
+    input_stylesheet = window.input_panel.styleSheet()
+
+    assert "QWidget#review-hud" in review_stylesheet
+    assert "font-size: 18px" in review_stylesheet
+    assert bg_path.as_posix() in review_stylesheet
+    assert "border-radius: 14px" in review_stylesheet
+    assert "font-size: 19px" in input_stylesheet
+
+
+def test_settings_window_theme_controls_reload_css(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("UTTATE_CONFIG_DIR", str(tmp_path / "config"))
+    custom_css = tmp_path / "custom.css"
+    custom_css.write_text("/* custom-marker */\n", encoding="utf-8")
+    window = MainWindow(
+        DeterministicProvider(delay_seconds=0),
+        prompt_registry=prompt_registry_for_tests(tmp_path),
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window._open_settings_window()
+    assert window._settings_window is not None
+
+    settings_window = window._settings_window
+    settings_window.theme_preset_combo.setCurrentIndex(
+        settings_window.theme_preset_combo.findData("glass")
+    )
+    settings_window.review_font_size.setValue(17)
+    settings_window.custom_css_path.setText(str(custom_css))
+    settings_window._reload_css()
+
+    assert window.settings.appearance.theme_preset == "glass"
+    assert window.settings.appearance.review_font_size == 17
+    assert "custom-marker" in window.review_hud.styleSheet()
+
+
 def test_review_hud_and_input_panel_are_independent_windows(qtbot) -> None:
     window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
@@ -340,6 +432,42 @@ def test_review_hud_and_input_panel_are_independent_windows(qtbot) -> None:
 
     assert window.review_hud.isVisible()
     assert window.review_hud.queue.count() == 1
+
+
+def test_input_panel_always_on_top_button_applies_to_all_windows(qtbot) -> None:
+    settings = AppSettings(dataset=DatasetCaptureSettings(collection_enabled=True))
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+    window.show_debug_console()
+    window._open_settings_window()
+    window.show_dataset_review_window()
+
+    managed_windows = [
+        window.review_hud,
+        window.input_panel,
+        window.debug_console,
+        window._settings_window,
+        window._dataset_review_window,
+    ]
+    assert all(managed_window is not None for managed_window in managed_windows)
+    assert not window.settings.input_panel.always_on_top
+
+    qtbot.mouseClick(window.input_panel.always_on_top_button, Qt.MouseButton.LeftButton)
+
+    assert window.settings.input_panel.always_on_top is True
+    assert window.input_panel.always_on_top_button.isChecked()
+    for managed_window in managed_windows:
+        assert managed_window is not None
+        assert managed_window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+
+    qtbot.mouseClick(window.input_panel.always_on_top_button, Qt.MouseButton.LeftButton)
+
+    assert window.settings.input_panel.always_on_top is False
+    assert not window.input_panel.always_on_top_button.isChecked()
+    for managed_window in managed_windows:
+        assert managed_window is not None
+        assert not managed_window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
 
 
 def test_review_hud_up_down_selects_pending_chunks(qtbot) -> None:
@@ -379,7 +507,7 @@ def test_review_hud_accept_removes_accepted_chunk_by_default(qtbot) -> None:
 def test_review_mode_shift_enter_accepts_and_records_dataset_candidate(qtbot, tmp_path) -> None:
     store = tmp_path / "review_candidates.jsonl"
     settings = AppSettings(
-        dataset=DatasetCaptureSettings(capture_enabled=True, capture_store_path=str(store))
+        dataset=DatasetCaptureSettings(capture_enabled=True, candidate_store_path=str(store))
     )
     window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
@@ -414,7 +542,7 @@ def test_review_mode_shift_enter_does_not_accept_when_capture_is_off(
 ) -> None:
     store = tmp_path / "disabled.jsonl"
     settings = AppSettings(
-        dataset=DatasetCaptureSettings(capture_enabled=False, capture_store_path=str(store))
+        dataset=DatasetCaptureSettings(capture_enabled=False, candidate_store_path=str(store))
     )
     window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
     qtbot.addWidget(window)
@@ -435,6 +563,171 @@ def test_review_mode_shift_enter_does_not_accept_when_capture_is_off(
     assert window.statusBar().currentMessage() == "Dataset capture is disabled"
 
 
+def test_dataset_collection_mode_off_does_not_create_review_candidates(qtbot, tmp_path) -> None:
+    store = tmp_path / "dataset_review.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(collection_enabled=False, review_store_path=str(store))
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "private draft")
+    wait_until_idle(qtbot, window)
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(window.review_hud.queue, Qt.Key.Key_Return)
+
+    assert window.document.chunks[0].status == ChunkStatus.ADOPTED
+    assert not store.exists()
+    window.show_dataset_review_window()
+    assert window._dataset_review_window is None
+    assert window.statusBar().currentMessage() == "Dataset Collection Mode is disabled"
+
+
+def test_dataset_collection_mode_records_accepted_candidate(qtbot, tmp_path) -> None:
+    store = tmp_path / "dataset_review.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(collection_enabled=True, review_store_path=str(store))
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "collect me")
+    wait_until_idle(qtbot, window)
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(window.review_hud.queue, Qt.Key.Key_Return)
+
+    items = load_dataset_items(store)
+    assert len(items) == 1
+    assert items[0]["dataset_status"] == "candidate"
+    assert items[0]["raw_input"] == "collect me"
+    assert items[0]["converted_text"] == "変換候補A: collect me"
+    assert items[0]["accepted_text"] == "変換候補A: collect me"
+    assert "api_key" not in items[0]
+
+
+def test_dataset_review_window_whitelist_toggle_and_export(qtbot, tmp_path) -> None:
+    store = tmp_path / "dataset_review.jsonl"
+    output = tmp_path / "export.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(
+            collection_enabled=True,
+            review_store_path=str(store),
+        )
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "skip me")
+    submit(qtbot, window, "export me")
+    wait_until_idle(qtbot, window)
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(window.review_hud.queue, Qt.Key.Key_Return)
+    qtbot.keyClick(window.review_hud.queue, Qt.Key.Key_Return)
+    window.show_dataset_review_window()
+
+    assert window._dataset_review_window is not None
+    assert window._dataset_review_window.item_count() == 2
+    first_item_id = load_dataset_items(store)[0]["id"]
+    window._set_dataset_item_status(first_item_id, "whitelisted")
+
+    for field in ("raw_input", "normalized_input", "accepted_text"):
+        safety_checkbox = window._dataset_review_window.safety_checkbox_for(first_item_id, field)
+        assert safety_checkbox is not None
+        assert not safety_checkbox.isChecked()
+        safety_checkbox.click()
+    assert (
+        window._dataset_review_window.safety_checkbox_for(first_item_id, "converted_text") is None
+    )
+    assert window._dataset_review_window.safety_checkbox_for(first_item_id, "edited_text") is None
+    assert {
+        field: safety
+        for field, safety in load_dataset_items(store)[0]["field_safety"].items()
+        if field in {"raw_input", "normalized_input", "accepted_text"}
+    } == {
+        "raw_input": "confirmed",
+        "normalized_input": "confirmed",
+        "accepted_text": "confirmed",
+    }
+    window._export_whitelisted_dataset(output, confirm=False)
+
+    exported_lines = output.read_text(encoding="utf-8").splitlines()
+    assert len(exported_lines) == 1
+    exported = json.loads(exported_lines[0])
+    assert exported["target_output"] == "変換候補A: export me"
+    assert exported["source"] == "uttate_writer_manual_whitelist"
+    assert exported["schema_version"] == 1
+    assert "accepted_text" not in exported
+    assert "converted_text" not in exported
+    assert "api_key" not in exported
+    items = load_dataset_items(store)
+    assert items[0]["dataset_status"] == "exported"
+    assert items[0]["exported_at"]
+    assert items[1]["dataset_status"] == "candidate"
+
+
+def test_dataset_review_window_shortcut_anonymizes_and_undoes_without_whitelist_change(
+    qtbot,
+    tmp_path,
+) -> None:
+    store = tmp_path / "dataset_review.jsonl"
+    settings = AppSettings(
+        dataset=DatasetCaptureSettings(collection_enabled=True, review_store_path=str(store))
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    submit(qtbot, window, "Alice visits Tokyo")
+    wait_until_idle(qtbot, window)
+    qtbot.keyClick(window.input_panel.editor, Qt.Key.Key_F2)
+    qtbot.keyClick(window.review_hud.queue, Qt.Key.Key_Return)
+    item_id = load_dataset_items(store)[0]["id"]
+    window._set_dataset_item_status(item_id, "whitelisted")
+    window.show_dataset_review_window()
+
+    assert window._dataset_review_window is not None
+    editor = window._dataset_review_window.editor_for(item_id, "accepted_text")
+    assert editor is not None
+    _select_text(editor, "Alice")
+    qtbot.keyClick(editor, Qt.Key.Key_1, Qt.KeyboardModifier.ControlModifier)
+
+    items = load_dataset_items(store)
+    assert items[0]["dataset_status"] == "whitelisted"
+    assert items[0]["accepted_text"] == "変換候補A: [PERSON_1] visits Tokyo"
+    assert items[0]["converted_text"] == "変換候補A: [PERSON_1] visits Tokyo"
+    assert items[0]["raw_input"] == "[PERSON_1] visits Tokyo"
+    assert items[0]["normalized_input"] == "[PERSON_1] visits Tokyo"
+    redaction = items[0]["redactions"][0]
+    assert redaction["type"] == "PERSON"
+    assert redaction["placeholder"] == "[PERSON_1]"
+    assert redaction["original_text"] == "Alice"
+    assert redaction["target_field"] == "accepted_text"
+    assert isinstance(redaction["start"], int)
+    assert isinstance(redaction["end"], int)
+    assert redaction["created_at"]
+    assert {entry["field"] for entry in redaction["replacements"]} >= {
+        "accepted_text",
+        "converted_text",
+        "raw_input",
+        "normalized_input",
+    }
+
+    editor = window._dataset_review_window.editor_for(item_id, "accepted_text")
+    assert editor is not None
+    qtbot.keyClick(editor, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+
+    items = load_dataset_items(store)
+    assert items[0]["dataset_status"] == "whitelisted"
+    assert items[0]["accepted_text"] == "変換候補A: Alice visits Tokyo"
+    assert items[0]["converted_text"] == "変換候補A: Alice visits Tokyo"
+    assert items[0]["raw_input"] == "Alice visits Tokyo"
+    assert items[0]["normalized_input"] == "Alice visits Tokyo"
+    assert items[0]["redactions"] == []
+
+
 def test_review_mode_space_can_select_second_candidate_before_accept(qtbot) -> None:
     window = MainWindow(DeterministicProvider(delay_seconds=0))
     qtbot.addWidget(window)
@@ -451,6 +744,16 @@ def test_review_mode_space_can_select_second_candidate_before_accept(qtbot) -> N
     assert chunk.status == ChunkStatus.ADOPTED
     assert chunk.adopted_text == "変換候補B: choose b"
     assert QApplication.clipboard().text() == "変換候補B: choose b"
+
+
+def _select_text(editor: QPlainTextEdit, text: str) -> None:
+    full_text = editor.toPlainText()
+    start = full_text.index(text)
+    cursor = editor.textCursor()
+    cursor.setPosition(start)
+    cursor.setPosition(start + len(text), QTextCursor.MoveMode.KeepAnchor)
+    editor.setTextCursor(cursor)
+    editor.setFocus()
 
 
 def test_candidate_edit_enter_accepts_edited_text_and_restores_input(qtbot) -> None:
@@ -511,6 +814,7 @@ def test_input_panel_provider_selector_updates_model_and_warning(qtbot, tmp_path
 
     assert "OpenAI API / gpt-5-nano" in window.input_panel.model_label.text()
     assert "OpenAI API" in window.input_panel.warning.text()
+    assert "privacy-warning-external" in window.input_panel.warning.property("class")
 
     window.input_panel.provider_combo.setCurrentIndex(
         window.input_panel.provider_combo.findData("local_ai")
@@ -519,6 +823,7 @@ def test_input_panel_provider_selector_updates_model_and_warning(qtbot, tmp_path
     assert window.settings.provider.type == "local_ai"
     assert "Local AI / model not selected" in window.input_panel.model_label.text()
     assert "外部APIへ送信されません" in window.input_panel.warning.text()
+    assert "privacy-warning-local" in window.input_panel.warning.property("class")
 
 
 def test_input_panel_send_button_commits_new_input(qtbot) -> None:
@@ -728,3 +1033,46 @@ def test_external_provider_shows_non_secret_input_warning(qtbot) -> None:
     assert "OpenAI API" in warning
     assert "秘密情報" in warning
     assert "secret" not in warning
+
+
+def test_input_panel_shows_gemini_privacy_warning(qtbot) -> None:
+    settings = AppSettings(provider=ProviderSettings(type="gemini", gemini_api_key="secret"))
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    warning = window.input_panel.warning.text()
+
+    assert window.input_panel.warning.isVisible()
+    assert warning == (
+        "外部API使用中: Gemini API。個人情報・未公開原稿・秘密情報は入力しないでください。"
+    )
+    assert "privacy-warning-external" in window.input_panel.warning.property("class")
+    assert "secret" not in warning
+
+
+def test_input_panel_privacy_warning_can_be_hidden_from_settings(qtbot) -> None:
+    settings = AppSettings(
+        provider=ProviderSettings(type="openai", openai_api_key="secret"),
+        dataset=DatasetCaptureSettings(warn_external_api_active=False),
+    )
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    assert not window.input_panel.warning.isVisible()
+
+
+def test_unknown_provider_uses_external_privacy_warning(qtbot) -> None:
+    settings = AppSettings(provider=ProviderSettings(type="custom_api", model="custom-model"))
+    window = MainWindow(DeterministicProvider(delay_seconds=0), settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+
+    warning = window.input_panel.warning.text()
+
+    assert window.input_panel.warning.isVisible()
+    assert warning == (
+        "外部API使用中: External API。個人情報・未公開原稿・秘密情報は入力しないでください。"
+    )
+    assert "privacy-warning-external" in window.input_panel.warning.property("class")

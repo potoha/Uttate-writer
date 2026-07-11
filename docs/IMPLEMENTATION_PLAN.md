@@ -1,5 +1,11 @@
 # Uttate Writer Project B 実装計画書
 
+> **履歴資料（現行の実装指示ではない）**
+>
+> 本書は旧Project B / API Provider BranchのMVP実装計画です。ブランチ統合後の変更は
+> [`../project.md`](../project.md)と[`REFACTORING_PLAN.md`](REFACTORING_PLAN.md)を優先し、
+> 本書のマイルストーンやProvider構成を新規実装の根拠にしないでください。
+
 ## 1. 計画の方針
 
 本計画は `project.md`、`project-b-api.md`、`docs/PROJECT_SCOPE.md` を基準に、

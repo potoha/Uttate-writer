@@ -1,0 +1,10 @@
+#review-hud,
+#input-panel,
+#debug-console {
+  background-color: rgba(253, 250, 244, 0.94);
+}
+
+.preview-text,
+.input-text {
+  color: #1f2933;
+}

@@ -1,5 +1,11 @@
 # Main merge preparation
 
+> **Historical handoff record (not current implementation guidance)**
+>
+> This note records the preparation for the former API-backed branch being merged into main on
+> 2026-07-06. Use [`../project.md`](../project.md) for current product scope and
+> [`REFACTORING_PLAN.md`](REFACTORING_PLAN.md) for the current implementation order.
+
 This note summarizes the merge-ready state of the API-backed Uttate branch.
 Git operations are intentionally left to the human/YURA flow.
 

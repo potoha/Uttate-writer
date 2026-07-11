@@ -28,5 +28,10 @@ def create_application(
     application.setApplicationName("Uttate Writer")
     application.setOrganizationName("Uttate")
     application.setQuitOnLastWindowClosed(False)
-    window = MainWindow(provider, settings=settings, prompt_registry=prompt_registry)
+    window = MainWindow(
+        provider,
+        settings=settings,
+        prompt_registry=prompt_registry,
+        quit_when_all_windows_closed=True,
+    )
     return application, window

@@ -1,4 +1,9 @@
-from uttate.conversion.direct import build_conversion_prompt
+import pytest
+
+from uttate.conversion.direct import (
+    build_conversion_prompt,
+    restore_masked_provider_result,
+)
 from uttate.input_rules import (
     ProtectedKind,
     mask_protected_input,
@@ -6,6 +11,7 @@ from uttate.input_rules import (
     romaji_to_hiragana,
     romaji_to_katakana,
 )
+from uttate.providers.base import Candidate, ProviderError, ProviderResult
 
 
 def test_katakana_name_tag_forces_katakana() -> None:
@@ -83,3 +89,28 @@ def test_conversion_prompt_includes_protected_terms_and_clean_input() -> None:
     assert (
         "入力:\n__UTTATE_PROTECTED_0__ to __UTTATE_PROTECTED_1__ to __UTTATE_PROTECTED_2__"
     ) in prompt
+
+
+@pytest.mark.parametrize(
+    "candidate_text",
+    [
+        "placeholder omitted",
+        "__UTTATE_PROTECTED_0__ and __UTTATE_PROTECTED_0__",
+        "__uttate_protected_0__",
+    ],
+)
+def test_protected_placeholder_must_survive_exactly_once(candidate_text: str) -> None:
+    masked = mask_protected_input("=English=")
+    result = ProviderResult(candidates=(Candidate("faithful", candidate_text),))
+
+    with pytest.raises(ProviderError, match="exactly once"):
+        restore_masked_provider_result(result, masked)
+
+
+def test_protected_placeholder_is_restored_after_validation() -> None:
+    masked = mask_protected_input("=English=")
+    result = ProviderResult(candidates=(Candidate("faithful", "Use __UTTATE_PROTECTED_0__ once."),))
+
+    restored = restore_masked_provider_result(result, masked)
+
+    assert restored.candidates[0].text == "Use English once."

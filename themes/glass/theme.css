@@ -1,0 +1,9 @@
+#review-hud,
+#input-panel,
+#debug-console {
+  background-color: rgba(240, 249, 255, 0.72);
+}
+
+.shortcut-bar {
+  color: #0f172a;
+}

@@ -16,17 +16,31 @@ class _WorkerSignals(QObject):
 
 
 class _ConversionWorker(QRunnable):
-    def __init__(self, chunk_id: str, raw_text: str, provider: ConversionProvider) -> None:
+    def __init__(
+        self,
+        chunk_id: str,
+        raw_text: str,
+        provider: ConversionProvider,
+        *,
+        previous_context: str,
+        candidate_count: int,
+    ) -> None:
         super().__init__()
         self.chunk_id = chunk_id
         self.raw_text = raw_text
         self.provider = provider
+        self.previous_context = previous_context
+        self.candidate_count = candidate_count
         self.signals = _WorkerSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            result = self.provider.convert(self.raw_text)
+            result = self.provider.convert(
+                self.raw_text,
+                previous_context=self.previous_context,
+                candidate_count=self.candidate_count,
+            )
         except Exception as error:  # noqa: BLE001 - worker errors must return to the UI
             LOGGER.exception(
                 "Conversion worker failed chunk_id=%s provider=%s raw_length=%s",
@@ -61,6 +75,7 @@ class ConversionQueue(QObject):
         self._chunks: dict[str, Chunk] = {}
         self._workers: dict[str, _ConversionWorker] = {}
         self._active_count = 0
+        self._accepting_work = True
 
     @property
     def active_count(self) -> int:
@@ -71,13 +86,34 @@ class ConversionQueue(QObject):
 
         self._provider = provider
 
-    def enqueue(self, chunk: Chunk) -> None:
+    def stop_accepting_work(self) -> None:
+        """Prevent new work while allowing active workers to finish safely."""
+
+        self._accepting_work = False
+
+    def enqueue(
+        self,
+        chunk: Chunk,
+        *,
+        previous_context: str = "",
+        candidate_count: int = 2,
+    ) -> None:
+        if not self._accepting_work:
+            raise RuntimeError("The conversion queue is shutting down.")
         if chunk.id in self._workers:
             raise ValueError(f"Chunk {chunk.id} is already being converted.")
+        if candidate_count <= 0:
+            raise ValueError("candidate_count must be positive.")
 
         chunk.transition_to(ChunkStatus.QUEUED)
         self._chunks[chunk.id] = chunk
-        worker = _ConversionWorker(chunk.id, chunk.raw_text, self._provider)
+        worker = _ConversionWorker(
+            chunk.id,
+            chunk.raw_text,
+            self._provider,
+            previous_context=previous_context,
+            candidate_count=candidate_count,
+        )
         worker.signals.completed.connect(self._handle_completed)
         worker.signals.failed.connect(self._handle_failed)
         self._workers[chunk.id] = worker

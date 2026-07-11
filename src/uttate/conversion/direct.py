@@ -8,7 +8,7 @@ from uttate.input_rules import (
     protected_masks_prompt,
 )
 from uttate.models import JsonObject
-from uttate.providers.base import Candidate, ProviderResult
+from uttate.providers.base import Candidate, ProviderError, ProviderResult
 
 CONVERSION_SCHEMA: JsonObject = {
     "type": "object",
@@ -97,7 +97,7 @@ def restore_masked_provider_result(
 ) -> ProviderResult:
     return ProviderResult(
         candidates=tuple(
-            Candidate(candidate.label, masked.restore(candidate.text))
+            Candidate(candidate.label, _restore_masked_candidate(candidate.text, masked))
             for candidate in result.candidates
         ),
         uncertain=tuple(_restore_uncertain(item, masked) for item in result.uncertain),
@@ -106,6 +106,19 @@ def restore_masked_provider_result(
         raw_response=result.raw_response,
         usage=result.usage,
     )
+
+
+def _restore_masked_candidate(text: str, masked: MaskedProtectedInput) -> str:
+    """Restore a provider candidate only when every protected term survived intact."""
+
+    for mask in masked.masks:
+        count = text.count(mask.placeholder)
+        if count != 1:
+            raise ProviderError(
+                "Provider candidate must contain each protected placeholder exactly once; "
+                f"{mask.placeholder} occurred {count} times."
+            )
+    return masked.restore(text)
 
 
 def _restore_uncertain(value: JsonObject, masked: MaskedProtectedInput) -> JsonObject:

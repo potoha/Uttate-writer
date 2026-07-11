@@ -1,0 +1,50 @@
+/* Uttate Writer stable theme API.
+   Qt applies generated QSS from the same variable set, while these files preserve
+   a CSS-shaped override surface for future theme authors. */
+
+#review-hud,
+#input-panel,
+#debug-console,
+#settings-window,
+#dataset-review-window {
+  font-family: var(--uw-font-family);
+  font-size: var(--uw-ui-font-size);
+}
+
+#review-hud {
+  width: var(--uw-review-width);
+  height: var(--uw-review-height);
+  border-radius: var(--uw-review-radius);
+}
+
+#input-panel {
+  width: var(--uw-input-width);
+  height: var(--uw-input-height);
+  border-radius: var(--uw-input-radius);
+}
+
+.queue-item {
+  font-size: var(--uw-queue-font-size);
+}
+
+.preview-text {
+  font-size: var(--uw-review-font-size);
+}
+
+.input-text {
+  font-size: var(--uw-input-font-size);
+}
+
+.shortcut-bar,
+.privacy-warning,
+.dataset-card {
+  font-size: var(--uw-shortcut-font-size);
+}
+
+.privacy-warning-external {
+  color: #8a3b00;
+}
+
+.privacy-warning-local {
+  color: #2f6250;
+}

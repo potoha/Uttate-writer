@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "theme_id": "glass",
+  "name": "Glass",
+  "version": "1.0.0",
+  "author": "Uttate Writer",
+  "description": "Transparent HUD-style surfaces for overlay use.",
+  "css": "theme.css",
+  "settings_css": "settings.css",
+  "assets_dir": "assets",
+  "preview_image": "",
+  "created_with": "Uttate Writer",
+  "supports": {
+    "review_hud_background": true,
+    "input_panel_background": true,
+    "debug_console_background": true,
+    "custom_fonts": true
+  }
+}

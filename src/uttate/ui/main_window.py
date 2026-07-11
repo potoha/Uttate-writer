@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Slot
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, Slot
 from PySide6.QtGui import (
     QCloseEvent,
     QGuiApplication,
@@ -13,10 +14,37 @@ from PySide6.QtGui import (
     QShortcut,
     QTextCursor,
 )
-from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 
-from uttate.addons.dataset_curator import add_candidate
-from uttate.config import AppSettings, ProviderSettings, default_dataset_capture_path, save_settings
+from uttate.addons.dataset_collection import (
+    add_dataset_candidate as add_dataset_collection_candidate,
+)
+from uttate.addons.dataset_collection import (
+    append_conversion_history,
+    apply_dataset_redaction,
+    dataset_export_summary,
+    export_whitelisted_dataset,
+    load_dataset_items,
+    set_dataset_field_safety,
+    set_dataset_status,
+    undo_last_dataset_redaction,
+)
+from uttate.addons.dataset_curator import add_candidate, load_candidates
+from uttate.config import (
+    AppSettings,
+    ProviderSettings,
+    default_conversion_history_path,
+    default_dataset_capture_path,
+    default_dataset_history_path,
+    save_settings,
+)
 from uttate.keymap import GLOBAL_MODE, KeyConfig
 from uttate.models import Chunk, ChunkStatus, Document, InvalidStatusTransition
 from uttate.pipeline.queue import ConversionQueue
@@ -24,12 +52,14 @@ from uttate.prompts.registry import LocalAIPromptRegistry
 from uttate.providers.base import ConversionProvider, ProviderError
 from uttate.providers.factory import create_conversion_provider
 from uttate.ui.chunk_list import ChunkListWidget
+from uttate.ui.dataset_review_window import DatasetReviewWindow
 from uttate.ui.debug_console import DebugConsole
 from uttate.ui.input_panel import InputPanel
 from uttate.ui.provider_panel import ProviderPanel
 from uttate.ui.review_hud import ReviewHUD, is_hud_chunk
 from uttate.ui.review_panel import ReviewPanel
 from uttate.ui.settings_window import SettingsWindow
+from uttate.ui.theme import apply_theme, normalized_theme_settings
 
 
 class ConsoleMode(StrEnum):
@@ -48,6 +78,7 @@ class MainWindow(QMainWindow):
         settings: AppSettings | None = None,
         prompt_registry: LocalAIPromptRegistry | None = None,
         max_workers: int = 2,
+        quit_when_all_windows_closed: bool = False,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Uttate Writer")
@@ -55,11 +86,15 @@ class MainWindow(QMainWindow):
         self._configure_main_window_geometry()
 
         self.document = Document()
-        self.settings = settings or AppSettings()
+        self.settings = normalized_theme_settings(settings or AppSettings())
         self.prompt_registry = prompt_registry
         self.key_config = KeyConfig.load()
         self._settings_window: SettingsWindow | None = None
+        self._dataset_review_window: DatasetReviewWindow | None = None
         self._global_shortcuts: list[QShortcut] = []
+        self._shutdown_requested = False
+        self._quit_when_all_windows_closed = quit_when_all_windows_closed
+        self._recorded_history_versions: set[tuple[str, float]] = set()
         initial_provider = provider or _provider_from_settings(
             self.settings.provider,
             prompt_registry=(
@@ -92,7 +127,8 @@ class MainWindow(QMainWindow):
         self._build_layout()
         self._connect_signals()
         self._refresh_global_shortcuts()
-        self._apply_style()
+        self._apply_theme()
+        self._apply_always_on_top()
         self.statusBar().showMessage("Ready")
         self._update_provider_ui()
         self._refresh_review_hud()
@@ -109,11 +145,12 @@ class MainWindow(QMainWindow):
     def commit_chunk(self, raw_text: str) -> None:
         if not raw_text.strip():
             return
+        previous_context = self._previous_context()
         chunk = self.document.add_chunk(raw_text)
         self.chunk_list.add_chunk(chunk)
         self.chunk_list.setCurrentRow(self.chunk_list.count() - 1)
         self.chunk_list.scrollToBottom()
-        self.conversion_queue.enqueue(chunk)
+        self.conversion_queue.enqueue(chunk, previous_context=previous_context)
         self._refresh_review_hud(selected_chunk_id=chunk.id)
         self.input_panel.editor.setFocus()
 
@@ -137,6 +174,12 @@ class MainWindow(QMainWindow):
             self.input_panel.set_send_enabled(True)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API name
+        if (
+            self._quit_when_all_windows_closed
+            and event.type() == QEvent.Type.Close
+            and watched in self._managed_top_level_windows()
+        ):
+            QTimer.singleShot(0, self._quit_if_all_managed_windows_closed)
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
 
@@ -168,16 +211,13 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
-        self.conversion_queue.wait_for_done(2000)
-        for window in (
-            self.review_hud,
-            self.input_panel,
-            self.debug_console,
-            self._settings_window,
-        ):
-            if window is not None:
+        if not self._quit_when_all_windows_closed:
+            for window in self._managed_top_level_windows():
                 window.close()
-        super().closeEvent(event)
+            event.accept()
+            return
+        event.ignore()
+        self.request_application_quit()
 
     def _build_layout(self) -> None:
         console = QWidget()
@@ -193,6 +233,7 @@ class MainWindow(QMainWindow):
         self.input_panel.editor.mode_toggle_requested.connect(self._toggle_mode)
         self.input_panel.provider_change_requested.connect(self._change_provider)
         self.input_panel.settings_requested.connect(self._open_settings_window)
+        self.input_panel.always_on_top_changed.connect(self._set_always_on_top)
         self.provider_panel.provider_change_requested.connect(self._change_provider)
         self.provider_panel.settings_requested.connect(self._open_settings_window)
         self.review_hud.always_show_changed.connect(self._set_review_hud_always_show)
@@ -204,6 +245,7 @@ class MainWindow(QMainWindow):
         self.review_hud.installEventFilter(self)
         self.review_hud.queue.installEventFilter(self)
         self.input_panel.installEventFilter(self)
+        self.debug_console.installEventFilter(self)
 
     @Slot(str)
     def _change_provider(self, provider_type: str) -> None:
@@ -217,6 +259,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as error:  # noqa: BLE001 - provider setup errors are user-visible
             self.provider_panel.set_settings(self.settings.provider, error=str(error))
+            self._update_provider_ui()
             self.statusBar().showMessage(f"Provider switch failed: {error}")
             return
 
@@ -224,6 +267,11 @@ class MainWindow(QMainWindow):
         self.conversion_queue.set_provider(provider)
         self.provider_panel.set_settings(next_settings)
         self._update_provider_ui()
+        try:
+            save_settings(self.settings)
+        except OSError as error:
+            self.statusBar().showMessage(f"Provider changed but settings save failed: {error}")
+            return
         self.statusBar().showMessage(f"Provider: {provider_type} / {_model_text(next_settings)}")
 
     @Slot()
@@ -241,11 +289,15 @@ class MainWindow(QMainWindow):
         if self.chunk_list.selected_chunk_id() == chunk_id:
             self.review_panel.show_chunk(chunk)
         self._refresh_review_hud(selected_chunk_id=chunk_id)
+        self._record_conversion_history(chunk)
         if self.mode == ConsoleMode.REVIEW and self._selected_chunk() is None:
             self._select_actionable_chunk(prefer_latest=True)
 
     @Slot(int)
     def _show_processing_count(self, active_count: int) -> None:
+        if self._shutdown_requested and active_count == 0:
+            self._finish_application_quit()
+            return
         if active_count:
             self.statusBar().showMessage(f"Converting {active_count} chunk(s) - keep typing")
         else:
@@ -401,7 +453,103 @@ class MainWindow(QMainWindow):
         self._settings_window.key_config_saved.connect(self._apply_key_config)
         self._settings_window.app_settings_saved.connect(self._apply_app_settings)
         self._settings_window.local_ai_prompts_saved.connect(self._apply_local_ai_prompts)
+        self._settings_window.reload_theme_requested.connect(self._reload_theme)
+        self._settings_window.dataset_review_requested.connect(self.show_dataset_review_window)
+        self._settings_window.dataset_export_requested.connect(self._export_whitelisted_dataset)
+        self._settings_window.installEventFilter(self)
         self._settings_window.show()
+        self._apply_theme()
+        self._apply_always_on_top()
+
+    @Slot()
+    def show_dataset_review_window(self) -> None:
+        if not self.settings.dataset.collection_enabled:
+            self.statusBar().showMessage("Dataset Collection Mode is disabled")
+            return
+        if self._dataset_review_window is None:
+            self._dataset_review_window = DatasetReviewWindow(None)
+            self._dataset_review_window.setWindowFlag(Qt.WindowType.Window, True)
+            self._dataset_review_window.status_changed.connect(self._set_dataset_item_status)
+            self._dataset_review_window.field_safety_changed.connect(self._set_dataset_field_safety)
+            self._dataset_review_window.redaction_requested.connect(self._apply_dataset_redaction)
+            self._dataset_review_window.undo_redaction_requested.connect(
+                self._undo_dataset_redaction
+            )
+            self._dataset_review_window.export_requested.connect(self._export_whitelisted_dataset)
+            self._dataset_review_window.installEventFilter(self)
+        self._refresh_dataset_review_window()
+        self._show_and_focus(self._dataset_review_window)
+        self._apply_theme()
+        self._apply_always_on_top()
+
+    @Slot(str, str)
+    def _set_dataset_item_status(self, item_id: str, dataset_status: str) -> None:
+        try:
+            set_dataset_status(
+                self._dataset_collection_store_path(),
+                item_id,
+                dataset_status,  # type: ignore[arg-type]
+            )
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Dataset status update failed: {error}")
+            return
+        self._refresh_dataset_review_window()
+        self.statusBar().showMessage(f"Dataset item {item_id}: {dataset_status}")
+
+    @Slot(str, str, str)
+    def _set_dataset_field_safety(self, item_id: str, field: str, safety: str) -> None:
+        try:
+            set_dataset_field_safety(
+                self._dataset_collection_store_path(),
+                item_id,
+                field=field,
+                safety=safety,  # type: ignore[arg-type]
+            )
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Dataset safety update failed: {error}")
+            self._refresh_dataset_review_window()
+            return
+        self._refresh_dataset_review_window()
+        self.statusBar().showMessage(f"Dataset field {field}: {safety}")
+
+    @Slot(str, str, int, int, str, object)
+    def _apply_dataset_redaction(
+        self,
+        item_id: str,
+        target_field: str,
+        start: int,
+        end: int,
+        redaction_type: str,
+        confirmed_fields: object,
+    ) -> None:
+        fields = confirmed_fields if isinstance(confirmed_fields, list) else []
+        try:
+            item = apply_dataset_redaction(
+                self._dataset_collection_store_path(),
+                item_id,
+                target_field=target_field,
+                start=start,
+                end=end,
+                redaction_type=redaction_type,  # type: ignore[arg-type]
+                confirmed_fields=[str(field) for field in fields],
+            )
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Anonymization failed: {error}")
+            return
+        self._refresh_dataset_review_window()
+        self.statusBar().showMessage(
+            f"Anonymized {target_field} as {item['redactions'][-1]['placeholder']}"
+        )
+
+    @Slot(str)
+    def _undo_dataset_redaction(self, item_id: str) -> None:
+        try:
+            undo_last_dataset_redaction(self._dataset_collection_store_path(), item_id)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Anonymization undo failed: {error}")
+            return
+        self._refresh_dataset_review_window()
+        self.statusBar().showMessage(f"Undid anonymization for {item_id}")
 
     @Slot(object)
     def _apply_key_config(self, key_config: KeyConfig) -> None:
@@ -412,13 +560,44 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _apply_app_settings(self, settings: AppSettings) -> None:
-        self.settings = settings
+        self.settings = normalized_theme_settings(settings)
         self.review_hud.set_settings(settings.review_hud)
         self.input_panel.set_settings(settings.input_panel)
         self._refresh_review_hud()
         self._update_provider_ui()
+        self._apply_theme()
+        self._apply_always_on_top()
         self.ensure_review_hud_visible()
+        if self._dataset_review_window is not None:
+            if self.settings.dataset.collection_enabled:
+                self._refresh_dataset_review_window()
+            else:
+                self._dataset_review_window.close()
         self.statusBar().showMessage("Settings saved")
+
+    @Slot(bool)
+    def _set_always_on_top(self, enabled: bool) -> None:
+        if self.settings.input_panel.always_on_top == enabled:
+            return
+        self.settings = replace(
+            self.settings,
+            input_panel=replace(self.settings.input_panel, always_on_top=enabled),
+        )
+        self.input_panel.set_settings(self.settings.input_panel)
+        if self._settings_window is not None:
+            self._settings_window.app_settings = self.settings
+        try:
+            save_settings(self.settings)
+        except OSError as error:
+            self.statusBar().showMessage(f"Always-on-top setting save failed: {error}")
+        self._apply_always_on_top()
+        state = "enabled" if enabled else "disabled"
+        self.statusBar().showMessage(f"Always on top {state}")
+
+    @Slot()
+    def _reload_theme(self) -> None:
+        self._apply_theme()
+        self.statusBar().showMessage("Theme reloaded")
 
     @Slot(bool)
     def _set_review_hud_always_show(self, enabled: bool) -> None:
@@ -491,6 +670,16 @@ class MainWindow(QMainWindow):
             return None
         return self.document.chunk_by_id(chunk_id)
 
+    def _previous_context(self) -> str:
+        """Return bounded, user-approved text preceding the next conversion."""
+
+        accepted = [
+            chunk.adopted_text
+            for chunk in self.document.chunks
+            if chunk.adopted_text and chunk.status in {ChunkStatus.ADOPTED, ChunkStatus.EDITED}
+        ]
+        return "\n".join(accepted)[-self.settings.provider.previous_context_chars :]
+
     def _select_chunk(self, chunk_id: str) -> None:
         for row in range(self.chunk_list.count()):
             item = self.chunk_list.item(row)
@@ -523,7 +712,10 @@ class MainWindow(QMainWindow):
 
     def _update_provider_ui(self) -> None:
         self.provider_panel.set_settings(self.settings.provider)
-        self.input_panel.set_provider_settings(self.settings.provider)
+        self.input_panel.set_provider_settings(
+            self.settings.provider,
+            show_privacy_warning=self.settings.dataset.warn_external_api_active,
+        )
 
     @staticmethod
     def _is_actionable(chunk: Chunk | None) -> bool:
@@ -555,9 +747,7 @@ class MainWindow(QMainWindow):
             return
         selected = self._selected_chunk()
         current_row = (
-            self.document.chunks.index(selected)
-            if selected in self.document.chunks
-            else -1
+            self.document.chunks.index(selected) if selected in self.document.chunks else -1
         )
         if current_row not in rows:
             self._select_chunk(self.document.chunks[rows[-1]].id)
@@ -604,11 +794,19 @@ class MainWindow(QMainWindow):
         message = "Accepted and copied to clipboard"
         if record_dataset:
             try:
-                candidate = self._add_dataset_candidate(chunk, text)
+                if self.settings.dataset.collection_enabled:
+                    candidate = self._record_dataset_collection_item(chunk, text)
+                else:
+                    candidate = self._add_dataset_candidate(chunk, text)
             except (OSError, ValueError) as error:
                 message = f"Accepted and copied; dataset capture failed: {error}"
             else:
                 message = f"Accepted, copied, and recorded {candidate['id']}"
+        elif self.settings.dataset.collection_enabled:
+            try:
+                self._record_dataset_collection_item(chunk, text)
+            except (OSError, ValueError) as error:
+                message = f"Accepted and copied; dataset candidate failed: {error}"
         self.statusBar().showMessage(message)
         self._select_actionable_chunk(prefer_latest=True)
 
@@ -680,7 +878,13 @@ class MainWindow(QMainWindow):
         self._restore_input_after_candidate_edit()
         self._refresh_review_hud()
         self._set_mode(ConsoleMode.REVIEW)
-        self.statusBar().showMessage("Edited candidate accepted and copied to clipboard")
+        message = "Edited candidate accepted and copied to clipboard"
+        if self.settings.dataset.collection_enabled:
+            try:
+                self._record_dataset_collection_item(chunk, text, edited_text=text)
+            except (OSError, ValueError) as error:
+                message = f"Edited candidate accepted; dataset candidate failed: {error}"
+        self.statusBar().showMessage(message)
 
     def _reconvert_candidate_edit(self) -> None:
         chunk = self._editing_chunk()
@@ -761,8 +965,193 @@ class MainWindow(QMainWindow):
         )
 
     def _dataset_capture_store_path(self) -> Path:
-        configured = self.settings.dataset.capture_store_path.strip()
+        configured = self.settings.dataset.candidate_store_path.strip()
         return Path(configured) if configured else default_dataset_capture_path()
+
+    def _dataset_collection_store_path(self) -> Path:
+        configured = self.settings.dataset.review_store_path.strip()
+        review_store = Path(configured) if configured else default_dataset_history_path()
+        self._migrate_legacy_candidate_store(review_store)
+        return review_store
+
+    def _migrate_legacy_candidate_store(self, review_store: Path) -> None:
+        """Copy a legacy capture store into the new review format without mutating the source."""
+
+        legacy_path_text = self.settings.dataset.capture_store_path.strip()
+        if self.settings.dataset.review_store_path.strip() or not legacy_path_text:
+            return
+        legacy_store = Path(legacy_path_text)
+        if not legacy_store.exists() or review_store.exists():
+            return
+        candidates = load_candidates(legacy_store)
+        for candidate in candidates:
+            raw = str(candidate.get("raw", "")).strip()
+            if not raw:
+                continue
+            chunk = Chunk(raw_text=raw)
+            add_dataset_collection_candidate(
+                review_store,
+                chunk,
+                converted_text=str(candidate.get("literal", "")) or raw,
+                accepted_text=str(candidate.get("natural", "")) or raw,
+                provider_type="",
+            )
+
+    def _conversion_history_store_path(self) -> Path:
+        configured = self.settings.dataset.history_store_path.strip()
+        return Path(configured) if configured else default_conversion_history_path()
+
+    def _record_conversion_history(self, chunk: Chunk) -> None:
+        if not self.settings.dataset.save_conversion_history:
+            return
+        if chunk.status not in {ChunkStatus.READY_FOR_REVIEW, ChunkStatus.FAILED}:
+            return
+        version = (chunk.id, chunk.updated_at)
+        if version in self._recorded_history_versions:
+            return
+        try:
+            append_conversion_history(self._conversion_history_store_path(), chunk)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Conversion history save failed: {error}")
+            return
+        self._recorded_history_versions.add(version)
+
+    def _record_dataset_collection_item(
+        self,
+        chunk: Chunk,
+        accepted_text: str,
+        *,
+        edited_text: str = "",
+    ) -> dict[str, object]:
+        item = add_dataset_collection_candidate(
+            self._dataset_collection_store_path(),
+            chunk,
+            converted_text=self._selected_candidate_text(chunk),
+            accepted_text=accepted_text,
+            edited_text=edited_text,
+            provider_type=self.settings.provider.type,
+        )
+        self._refresh_dataset_review_window()
+        return dict(item)
+
+    def _refresh_dataset_review_window(self) -> None:
+        if self._dataset_review_window is None:
+            return
+        if not self.settings.dataset.collection_enabled:
+            self._dataset_review_window.set_items([])
+            return
+        try:
+            items = load_dataset_items(self._dataset_collection_store_path())
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Dataset review load failed: {error}")
+            items = []
+        self._dataset_review_window.set_items(items)
+
+    @Slot()
+    def _export_whitelisted_dataset(
+        self,
+        output_path: Path | None = None,
+        *,
+        confirm: bool = True,
+    ) -> None:
+        if not self.settings.dataset.collection_enabled:
+            self.statusBar().showMessage("Dataset Collection Mode is disabled")
+            return
+        include_exported = False
+        if output_path is None:
+            destination_text, _selected_filter = QFileDialog.getSaveFileName(
+                self,
+                "Export whitelisted dataset",
+                _default_dataset_export_filename(),
+                "JSON Lines (*.jsonl);;All files (*)",
+            )
+            if not destination_text:
+                return
+            output_path = Path(destination_text)
+        try:
+            summary = dataset_export_summary(self._dataset_collection_store_path())
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Dataset export failed", str(error))
+            self.statusBar().showMessage(f"Dataset export failed: {error}")
+            return
+        if summary["whitelisted_count"] == 0 and summary["exported_count"] > 0 and confirm:
+            response = QMessageBox.question(
+                self,
+                "Re-export dataset",
+                "There are no whitelisted items, but previously exported items exist. "
+                "Re-export exported items?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage("Dataset export cancelled")
+                return
+            include_exported = True
+            try:
+                summary = dataset_export_summary(
+                    self._dataset_collection_store_path(),
+                    include_exported=True,
+                )
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(self, "Dataset export failed", str(error))
+                self.statusBar().showMessage(f"Dataset export failed: {error}")
+                return
+        if summary["whitelisted_count"] == 0:
+            QMessageBox.warning(self, "Dataset export skipped", "No whitelisted dataset items.")
+            self.statusBar().showMessage("No whitelisted dataset items")
+            return
+        if summary["non_anonymized_count"] > 0:
+            QMessageBox.warning(
+                self,
+                "Dataset export blocked",
+                "Every exported field must be confirmed safe or fully anonymized before export.",
+            )
+            self.statusBar().showMessage("Dataset export blocked: non-anonymized items")
+            return
+        if confirm and not self._confirm_dataset_export(output_path, summary):
+            self.statusBar().showMessage("Dataset export cancelled")
+            return
+        try:
+            count = export_whitelisted_dataset(
+                self._dataset_collection_store_path(),
+                output_path,
+                include_exported=include_exported,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Dataset export failed", str(error))
+            self.statusBar().showMessage(f"Dataset export failed: {error}")
+            return
+        self._refresh_dataset_review_window()
+        self.statusBar().showMessage(f"Exported {count} whitelisted dataset item(s)")
+
+    def _confirm_dataset_export(self, output_path: Path, summary: dict[str, object]) -> bool:
+        provider_lines = "\n".join(
+            f"- {key}: {count}"
+            for key, count in sorted(
+                dict(summary["provider_model_counts"]).items(),
+                key=lambda item: item[0],
+            )
+        )
+        if not provider_lines:
+            provider_lines = "- none"
+        message = (
+            f"Whitelisted items: {summary['whitelisted_count']}\n"
+            f"Anonymized items: {summary['anonymized_count']}\n"
+            f"Non-anonymized items: {summary['non_anonymized_count']}\n"
+            f"Gemini API items: {summary['gemini_count']}\n"
+            f"OpenAI API items: {summary['openai_count']}\n"
+            f"Local AI items: {summary['local_ai_count']}\n\n"
+            f"Provider/model breakdown:\n{provider_lines}\n\n"
+            f"Output path:\n{output_path}"
+        )
+        response = QMessageBox.question(
+            self,
+            "Confirm dataset export",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return response == QMessageBox.StandardButton.Yes
 
     def _editing_chunk(self) -> Chunk | None:
         if self._editing_chunk_id is None:
@@ -785,29 +1174,62 @@ class MainWindow(QMainWindow):
         self._editing_chunk_id = None
         self._editing_candidate_index = 0
 
-    def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QLabel#sectionTitle {
-                font-size: 16px;
-                font-weight: 600;
-            }
-            QLabel#sectionHint {
-                color: #6b7280;
-            }
-            QPlainTextEdit, QListWidget {
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 6px;
-            }
-            QLabel#providerModelLabel {
-                color: #374151;
-            }
-            QLabel#providerErrorLabel {
-                color: #b91c1c;
-            }
-            """
-        )
+    def _apply_theme(self) -> None:
+        widgets: list[QWidget] = [
+            self,
+            self.review_hud,
+            self.input_panel,
+            self.debug_console,
+        ]
+        if self._settings_window is not None:
+            widgets.append(self._settings_window)
+        if self._dataset_review_window is not None:
+            widgets.append(self._dataset_review_window)
+        apply_theme(self.settings, widgets)
+
+    def _managed_top_level_windows(self) -> list[QWidget]:
+        windows: list[QWidget] = [
+            self.review_hud,
+            self.input_panel,
+            self.debug_console,
+        ]
+        if self._settings_window is not None:
+            windows.append(self._settings_window)
+        if self._dataset_review_window is not None:
+            windows.append(self._dataset_review_window)
+        return windows
+
+    def _apply_always_on_top(self) -> None:
+        enabled = self.settings.input_panel.always_on_top
+        for window in self._managed_top_level_windows():
+            was_visible = window.isVisible()
+            window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+            if was_visible:
+                window.show()
+
+    def request_application_quit(self) -> None:
+        """Close managed windows after active conversions have settled."""
+
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        self.conversion_queue.stop_accepting_work()
+        for window in self._managed_top_level_windows():
+            window.close()
+        if self.conversion_queue.active_count == 0:
+            self._finish_application_quit()
+
+    def _quit_if_all_managed_windows_closed(self) -> None:
+        if self._shutdown_requested:
+            return
+        if any(window.isVisible() for window in self._managed_top_level_windows()):
+            return
+        self.request_application_quit()
+
+    def _finish_application_quit(self) -> None:
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
 
 
 def _provider_from_settings(
@@ -829,3 +1251,8 @@ def _model_text(settings: ProviderSettings) -> str:
     if settings.type == "local_ai":
         return settings.compatible_model or "auto-detect"
     return "local_ai"
+
+
+def _default_dataset_export_filename() -> str:
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    return f"uttate_dataset_{timestamp}.jsonl"

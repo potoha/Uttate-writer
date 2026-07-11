@@ -1,0 +1,17 @@
+#review-hud,
+#input-panel,
+#debug-console {
+  background-color: rgba(255, 255, 255, 0.92);
+}
+
+.queue-item.pending {
+  background: #fef3c7;
+}
+
+.queue-item.accepted {
+  background: #dcfce7;
+}
+
+.queue-item.error {
+  background: #fee2e2;
+}

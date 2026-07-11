@@ -203,6 +203,7 @@ def test_openai_provider_posts_responses_request_and_parses_output() -> None:
 def test_openai_provider_masks_protected_input_and_restores_result() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = request.read().decode("utf-8")
+        assert '"store":false' in payload
         assert "dedodamu" not in payload
         assert "English" not in payload
         assert "tokiori" not in payload

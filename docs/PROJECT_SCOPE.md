@@ -1,5 +1,11 @@
 # Uttate Writer Project B MVP Scope
 
+> **履歴資料（現行の実装指示ではない）**
+>
+> 本書は旧Project B / API Provider BranchのMVP境界を記録したものです。現在の仕様は
+> [`../project.md`](../project.md)、現在の安全性・保守性の作業順序は
+> [`REFACTORING_PLAN.md`](REFACTORING_PLAN.md)を参照してください。
+
 ## 1. 文書の目的
 
 本書は `project.md` と `project-b-api.md` をもとに、Uttate Writer の

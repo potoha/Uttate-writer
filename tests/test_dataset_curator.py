@@ -5,6 +5,8 @@ import pytest
 
 from uttate.addons.dataset_builder import load_seed_records
 from uttate.addons.dataset_curator import (
+    CURATOR_SCHEMA,
+    CURATOR_SCHEMA_VERSION,
     add_candidate,
     approve_candidate,
     check_store_risks,
@@ -39,6 +41,56 @@ def test_add_candidate_creates_store_with_safe_defaults(tmp_path: Path) -> None:
     assert candidate["notes"] == ""
     assert all(value is False for value in candidate["checks"].values())
     assert load_candidates(store)[0]["raw"] == sample_texts()["raw"]
+    stored = read_jsonl(store)[0]
+    assert stored["schema"] == CURATOR_SCHEMA
+    assert stored["schema_version"] == CURATOR_SCHEMA_VERSION
+
+
+def test_candidate_store_rejects_review_and_mixed_legacy_rows(tmp_path: Path) -> None:
+    store = tmp_path / "candidates.jsonl"
+    store.write_text(
+        json.dumps(
+            {
+                "id": "ds_20260708_000001",
+                "dataset_status": "candidate",
+                "raw_input": "raw",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="dataset review item"):
+        load_candidates(store)
+
+    store.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "legacy",
+                        "status": "candidate",
+                        **sample_texts(),
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "schema": CURATOR_SCHEMA,
+                        "schema_version": CURATOR_SCHEMA_VERSION,
+                        "id": "marked",
+                        "status": "candidate",
+                        **sample_texts(" marked"),
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Mixed candidate schemas"):
+        load_candidates(store)
 
 
 def test_add_candidate_rejects_duplicate_id(tmp_path: Path) -> None:

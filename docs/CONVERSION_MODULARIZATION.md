@@ -1,5 +1,11 @@
 # 変換機能のモジュール化
 
+> **履歴資料（現行の実装指示ではない）**
+>
+> 本書は旧`not-local`ブランチを統合した際のモジュール移行記録です。現行の変更では、
+> ソースコードと[`REFACTORING_PLAN.md`](REFACTORING_PLAN.md)を優先し、本書のブランチ前提を
+> 新しい設計判断として再利用しないでください。
+
 この branch では `not-local` を統合母体として扱う。変換境界を provider の通信実装から
 分離し、UI や Gemini / OpenAI direct API flow を書き換えずに main 由来の local conversion
 を導入できる形にする。
